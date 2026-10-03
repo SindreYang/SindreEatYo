@@ -117,6 +117,7 @@ class AlarmPermissionModule(private val reactContext: ReactApplicationContext) :
   fun testAlarm(promise: Promise) {
     try {
       MedicationAlarmReceiver.postNotification(reactContext, "吃哟咯·测试提醒", "如果你听到铃声并感到振动，提醒链路正常。", "default", "test", System.currentTimeMillis().toString())
+      android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({ MedicationAlarmReceiver.stopActive(reactContext) }, 10_000L)
       promise.resolve(null)
     } catch (error: Exception) {
       promise.reject("TEST_FAILED", error)
