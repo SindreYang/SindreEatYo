@@ -25,7 +25,7 @@ Windows 可以直接开发和运行 Android；iOS 需要 macOS + Xcode，或交�
 
 ## GitHub Actions
 
-- `.github/workflows/android.yml`：Ubuntu Runner 构建 debug APK
+- `.github/workflows/android.yml`：Ubuntu Runner 构建可独立启动的 Android APK（内置 JS bundle）
 - `.github/workflows/ios.yml`：macOS Runner 构建未签名 iOS Simulator App
 
 真机 iOS 发布包仍需要 Apple Developer 证书、Provisioning Profile，以及 GitHub Secrets。普通系统通知可能被用户划掉，App 内“待确认”状态不会被清除；若需要无视静音/勿扰模式的强提醒，需要另行申请平台权限。
