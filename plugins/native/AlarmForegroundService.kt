@@ -91,8 +91,14 @@ class AlarmForegroundService : Service() {
     activeItemId = intent.getStringExtra(EXTRA_ITEM_ID) ?: ""
     activeDueAt = intent.getStringExtra(EXTRA_DUE_AT) ?: System.currentTimeMillis().toString()
     saveActiveAlarm()
-    activateAlarm()
     AlarmPermissionModule.recordEvent(this, "alarm_service_started")
+    try {
+      activateAlarm()
+    } catch (error: Exception) {
+      AlarmPermissionModule.recordEvent(this, "alarm_service_failed_${error.javaClass.simpleName}")
+      stopSelf()
+      return
+    }
     if (intent.getBooleanExtra(EXTRA_TEST, false)) handler.postDelayed({ stopCurrentAlarm() }, TEST_DURATION_MS)
   }
 
@@ -105,7 +111,23 @@ class AlarmForegroundService : Service() {
     startAsForeground(ALARM_NOTIFICATION_ID, notification)
     (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).notify(ALARM_NOTIFICATION_ID, notification)
     currentNotificationId = ALARM_NOTIFICATION_ID
+    showAlarmActivity(title, body, itemId, dueAt)
     ringOnce()
+  }
+
+  private fun showAlarmActivity(title: String, body: String, itemId: String, dueAt: String) {
+    try {
+      startActivity(Intent(this, MedicationAlarmActivity::class.java).apply {
+        putExtra(EXTRA_TITLE, title)
+        putExtra(EXTRA_BODY, body)
+        putExtra(EXTRA_ITEM_ID, itemId)
+        putExtra(EXTRA_DUE_AT, dueAt)
+        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+      })
+      AlarmPermissionModule.recordEvent(this, "alarm_activity_requested")
+    } catch (error: Exception) {
+      AlarmPermissionModule.recordEvent(this, "alarm_activity_failed_${error.javaClass.simpleName}")
+    }
   }
 
   private fun hasActiveAlarm(): Boolean = activeTitle != null
