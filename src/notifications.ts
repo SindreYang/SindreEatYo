@@ -18,9 +18,11 @@ type NativeAlarmRecord = {
 type NativeAlarmModule = {
   scheduleAlarms?: (recordsJson: string) => Promise<void>;
   cancelAllAlarms?: () => Promise<void>;
-  getStatus?: () => Promise<{ exactAlarm: boolean; fullScreen: boolean; notifications: boolean; batteryOptimizationIgnored?: boolean; lastAlarmEvent?: string; lastAlarmAt?: string }>;
+  getStatus?: () => Promise<{ exactAlarm: boolean; fullScreen: boolean; notifications: boolean; batteryOptimizationIgnored?: boolean; lastAlarmEvent?: string; lastAlarmAt?: string; backgroundServiceEnabled?: boolean; backgroundServiceRunning?: boolean }>;
   testAlarm?: () => Promise<void>;
   stopAlarm?: () => Promise<void>;
+  startBackgroundService?: () => Promise<void>;
+  stopBackgroundService?: () => Promise<void>;
   openBatteryOptimizationSettings?: () => Promise<void>;
   openAppDetailsSettings?: () => Promise<void>;
 };
@@ -252,4 +254,11 @@ export async function testAlarm() {
 
 export async function stopAlarm() {
   if (Platform.OS === 'android' && nativeAlarm?.stopAlarm) await nativeAlarm.stopAlarm();
+}
+
+export async function setBackgroundServiceEnabled(enabled: boolean) {
+  if (Platform.OS !== 'android') return;
+  if (enabled) await nativeAlarm?.startBackgroundService?.();
+  else await nativeAlarm?.stopBackgroundService?.();
+  await addDebugLog('background_service_requested', { enabled });
 }

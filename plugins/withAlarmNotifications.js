@@ -4,6 +4,8 @@ const { withAndroidManifest, withDangerousMod } = require('@expo/config-plugins'
 
 const FULL_SCREEN_PERMISSION = 'android.permission.USE_FULL_SCREEN_INTENT';
 const BATTERY_PERMISSION = 'android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS';
+const FOREGROUND_SERVICE_PERMISSION = 'android.permission.FOREGROUND_SERVICE';
+const FOREGROUND_SPECIAL_USE_PERMISSION = 'android.permission.FOREGROUND_SERVICE_SPECIAL_USE';
 const BUILDER_RELATIVE_PATH = 'node_modules/expo-notifications/android/src/main/java/expo/modules/notifications/notifications/presentation/builders/ExpoNotificationBuilder.kt';
 const NATIVE_SOURCE_RELATIVE_PATH = 'plugins/native/EatYoAlarm.kt';
 const PACKAGE_PATH = 'com/sindreyang/sindreeatyo';
@@ -15,6 +17,8 @@ function withAlarmNotifications(config) {
       permissions.push({ $: { 'android:name': FULL_SCREEN_PERMISSION } });
     }
     if (!permissions.some((permission) => permission.$?.['android:name'] === BATTERY_PERMISSION)) permissions.push({ $: { 'android:name': BATTERY_PERMISSION } });
+    if (!permissions.some((permission) => permission.$?.['android:name'] === FOREGROUND_SERVICE_PERMISSION)) permissions.push({ $: { 'android:name': FOREGROUND_SERVICE_PERMISSION } });
+    if (!permissions.some((permission) => permission.$?.['android:name'] === FOREGROUND_SPECIAL_USE_PERMISSION)) permissions.push({ $: { 'android:name': FOREGROUND_SPECIAL_USE_PERMISSION } });
     manifestConfig.modResults.manifest['uses-permission'] = permissions;
     const application = manifestConfig.modResults.manifest.application?.[0];
     if (application) {
@@ -34,6 +38,19 @@ function withAlarmNotifications(config) {
           ] }],
         });
       }
+      application.service = application.service ?? [];
+      if (!application.service.some((service) => service.$?.['android:name'] === '.AlarmForegroundService')) {
+        application.service.push({
+          $: { 'android:name': '.AlarmForegroundService', 'android:enabled': 'true', 'android:exported': 'false', 'android:foregroundServiceType': 'specialUse', 'android:stopWithTask': 'false' },
+          property: [{ $: { 'android:name': 'android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE', 'android:value': '持续运行吃药提醒并在到点响铃和振动' } }],
+        });
+      }
+      application.activity = application.activity ?? [];
+      if (!application.activity.some((activity) => activity.$?.['android:name'] === '.MedicationAlarmActivity')) {
+        application.activity.push({
+          $: { 'android:name': '.MedicationAlarmActivity', 'android:enabled': 'true', 'android:exported': 'false', 'android:excludeFromRecents': 'true', 'android:launchMode': 'singleTop', 'android:showWhenLocked': 'true', 'android:turnScreenOn': 'true' },
+        });
+      }
     }
     return manifestConfig;
   });
@@ -42,9 +59,12 @@ function withAlarmNotifications(config) {
     const projectRoot = dangerousConfig.modRequest.projectRoot;
     const packageDir = path.join(dangerousConfig.modRequest.platformProjectRoot, 'app', 'src', 'main', 'java', PACKAGE_PATH);
     fs.mkdirSync(packageDir, { recursive: true });
-    const nativeSource = path.join(projectRoot, NATIVE_SOURCE_RELATIVE_PATH);
-    if (!fs.existsSync(nativeSource)) throw new Error(`Missing ${NATIVE_SOURCE_RELATIVE_PATH}`);
-    fs.copyFileSync(nativeSource, path.join(packageDir, 'EatYoAlarm.kt'));
+    const nativeFiles = ['EatYoAlarm.kt', 'AlarmForegroundService.kt'];
+    for (const nativeFile of nativeFiles) {
+      const nativeSource = path.join(projectRoot, 'plugins/native', nativeFile);
+      if (!fs.existsSync(nativeSource)) throw new Error(`Missing plugins/native/${nativeFile}`);
+      fs.copyFileSync(nativeSource, path.join(packageDir, nativeFile));
+    }
 
     const mainApplicationPath = path.join(packageDir, 'MainApplication.kt');
     let mainApplication = fs.readFileSync(mainApplicationPath, 'utf8');

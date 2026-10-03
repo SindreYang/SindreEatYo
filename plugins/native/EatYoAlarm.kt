@@ -52,6 +52,8 @@ class AlarmPermissionModule(private val reactContext: ReactApplicationContext) :
       val prefs = preferences(reactContext)
       result.putString("lastAlarmEvent", prefs.getString(KEY_LAST_EVENT, "") ?: "")
       result.putString("lastAlarmAt", prefs.getString(KEY_LAST_EVENT_AT, "") ?: "")
+      result.putBoolean("backgroundServiceEnabled", prefs.getBoolean(KEY_BACKGROUND_SERVICE, true))
+      result.putBoolean("backgroundServiceRunning", AlarmForegroundService.isRunning())
       promise.resolve(result)
     } catch (error: Exception) {
       promise.reject("STATUS_FAILED", error)
@@ -116,8 +118,7 @@ class AlarmPermissionModule(private val reactContext: ReactApplicationContext) :
   @ReactMethod
   fun testAlarm(promise: Promise) {
     try {
-      MedicationAlarmReceiver.postNotification(reactContext, "吃哟咯·测试提醒", "如果你听到铃声并感到振动，提醒链路正常。", "default", "test", System.currentTimeMillis().toString())
-      android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({ MedicationAlarmReceiver.stopActive(reactContext) }, 10_000L)
+      AlarmForegroundService.startAlarm(reactContext, "吃哟咯·测试提醒", "如果你听到铃声并感到振动，提醒链路正常。", "test", System.currentTimeMillis().toString(), true)
       promise.resolve(null)
     } catch (error: Exception) {
       promise.reject("TEST_FAILED", error)
@@ -127,10 +128,31 @@ class AlarmPermissionModule(private val reactContext: ReactApplicationContext) :
   @ReactMethod
   fun stopAlarm(promise: Promise) {
     try {
-      MedicationAlarmReceiver.stopActive(reactContext)
+      AlarmForegroundService.stopActive(reactContext)
       promise.resolve(null)
     } catch (error: Exception) {
       promise.reject("STOP_FAILED", error)
+    }
+  }
+
+  @ReactMethod
+  fun startBackgroundService(promise: Promise) {
+    try {
+      preferences(reactContext).edit().putBoolean(KEY_BACKGROUND_SERVICE, true).apply()
+      AlarmForegroundService.startBackground(reactContext)
+      promise.resolve(null)
+    } catch (error: Exception) {
+      promise.reject("BACKGROUND_START_FAILED", error)
+    }
+  }
+
+  @ReactMethod
+  fun stopBackgroundService(promise: Promise) {
+    try {
+      AlarmForegroundService.stopBackground(reactContext)
+      promise.resolve(null)
+    } catch (error: Exception) {
+      promise.reject("BACKGROUND_STOP_FAILED", error)
     }
   }
 
@@ -150,6 +172,7 @@ class AlarmPermissionModule(private val reactContext: ReactApplicationContext) :
     const val KEY_RECORDS = "records"
     const val KEY_LAST_EVENT = "last_alarm_event"
     const val KEY_LAST_EVENT_AT = "last_alarm_at"
+    const val KEY_BACKGROUND_SERVICE = "background_service_enabled"
     fun preferences(context: Context): SharedPreferences = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
     fun recordEvent(context: Context, event: String) {
       preferences(context).edit().putString(KEY_LAST_EVENT, event).putString(KEY_LAST_EVENT_AT, System.currentTimeMillis().toString()).apply()
@@ -201,6 +224,11 @@ object AlarmScheduler {
       }
     }
     AlarmPermissionModule.recordEvent(context, "schedule_count_$scheduledCount")
+    if (records.length() > 0 && AlarmPermissionModule.preferences(context).getBoolean(AlarmPermissionModule.KEY_BACKGROUND_SERVICE, true)) {
+      AlarmForegroundService.startBackground(context)
+    } else if (records.length() == 0) {
+      AlarmForegroundService.stopRuntime(context)
+    }
   }
 
   fun restore(context: Context) {
@@ -230,7 +258,13 @@ object AlarmScheduler {
 class MedicationAlarmReceiver : BroadcastReceiver() {
   override fun onReceive(context: Context, intent: Intent) {
     AlarmPermissionModule.recordEvent(context, "alarm_received")
-    postNotification(context, intent.getStringExtra("title") ?: "该吃药啦", intent.getStringExtra("body") ?: "请进入吃哟咯确认已吃药", intent.getStringExtra("sound") ?: "default", intent.getStringExtra("itemId") ?: "", intent.getStringExtra("dueAt") ?: System.currentTimeMillis().toString())
+    AlarmForegroundService.startAlarm(
+      context,
+      intent.getStringExtra("title") ?: "该吃药啦",
+      intent.getStringExtra("body") ?: "请进入吃哟咯确认已吃药",
+      intent.getStringExtra("itemId") ?: "",
+      intent.getStringExtra("dueAt") ?: System.currentTimeMillis().toString()
+    )
   }
 
   companion object {
