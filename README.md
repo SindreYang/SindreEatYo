@@ -1,4 +1,4 @@
-# SindreEatYo
+# 吃哟咯（SindreEatYo）
 
 跨平台「吃哟了」提醒 App，使用 React Native + TypeScript + Expo 实现，目标平台为 Android 与 iOS。
 
@@ -25,7 +25,9 @@ Windows 可以直接开发和运行 Android；iOS 需要 macOS + Xcode，或交�
 
 ## GitHub Actions
 
-- `.github/workflows/android.yml`：Ubuntu Runner 构建可独立启动的 Android APK（内置 JS bundle）
+- `.github/workflows/android.yml`：Ubuntu Runner 构建可独立启动的 Android Release APK（内置 JS bundle）
 - `.github/workflows/ios.yml`：macOS Runner 构建未签名 iOS Simulator App
+
+Android 提醒会使用高优先级通知、振动、锁屏可见和全屏提醒入口；首次添加药品时，建议开启精确闹钟与锁屏全屏提醒权限。即使通知被划掉或错过，App 内仍保留“待确认吃药”。
 
 真机 iOS 发布包仍需要 Apple Developer 证书、Provisioning Profile，以及 GitHub Secrets。普通系统通知可能被用户划掉，App 内“待确认”状态不会被清除；若需要无视静音/勿扰模式的强提醒，需要另行申请平台权限。

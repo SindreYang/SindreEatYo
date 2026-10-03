@@ -1,5 +1,6 @@
 export type ReminderMode = 'interval' | 'fixed';
 export type RepeatRule = 'daily' | 'weekly' | 'custom';
+export type ReminderSound = 'default' | 'gentle' | 'urgent';
 
 export interface YoItem {
   id: string;
@@ -12,6 +13,7 @@ export interface YoItem {
   weekdays: number[];
   bellCount: 1 | 2;
   secondBellDelayMinutes: number;
+  sound: ReminderSound;
   enabled: boolean;
   createdAt: string;
 }
@@ -40,6 +42,7 @@ export const emptyItem = (): YoItem => ({
   weekdays: [1, 2, 3, 4, 5, 6, 7],
   bellCount: 1,
   secondBellDelayMinutes: 10,
+  sound: 'default',
   enabled: true,
   createdAt: new Date().toISOString(),
 });

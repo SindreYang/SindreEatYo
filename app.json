@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "SindreEatYo",
+    "name": "吃哟咯",
     "slug": "sindre-eat-yo",
     "version": "0.1.0",
     "icon": "./assets/icon.png",
@@ -16,8 +16,8 @@
     },
     "android": {
       "package": "com.sindreyang.sindreeatyo",
-      "permissions": ["SCHEDULE_EXACT_ALARM", "POST_NOTIFICATIONS", "VIBRATE", "RECEIVE_BOOT_COMPLETED"]
+      "permissions": ["SCHEDULE_EXACT_ALARM", "USE_EXACT_ALARM", "USE_FULL_SCREEN_INTENT", "WAKE_LOCK", "DISABLE_KEYGUARD", "POST_NOTIFICATIONS", "VIBRATE", "RECEIVE_BOOT_COMPLETED"]
     },
-    "plugins": ["expo-notifications"]
+    "plugins": [["expo-notifications", {"sounds": ["./assets/sounds/gentle.wav", "./assets/sounds/urgent.wav"]}], "./plugins/withAlarmNotifications"]
   }
 }

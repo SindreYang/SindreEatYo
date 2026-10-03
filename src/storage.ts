@@ -1,5 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { AppData } from './types';
+import { AppData, emptyItem, YoItem } from './types';
 
 const KEY = '@sindre_eat_yo/data/v1';
 
@@ -9,7 +9,7 @@ export async function loadData(): Promise<AppData> {
   try {
     const parsed = JSON.parse(raw) as Partial<AppData>;
     return {
-      items: Array.isArray(parsed.items) ? parsed.items : [],
+      items: Array.isArray(parsed.items) ? parsed.items.map((item) => ({ ...emptyItem(), ...(item as Partial<YoItem>), sound: (item as Partial<YoItem>).sound ?? 'default' })) : [],
       pendingDoses: Array.isArray(parsed.pendingDoses) ? parsed.pendingDoses : [],
     };
   } catch {
