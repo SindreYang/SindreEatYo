@@ -1,9 +1,7 @@
 name: iOS Build
 
 on:
-  push:
-    branches: [main, master]
-  pull_request:
+  workflow_dispatch:
 
 jobs:
   ios-simulator:
