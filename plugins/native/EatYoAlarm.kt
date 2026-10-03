@@ -123,6 +123,16 @@ class AlarmPermissionModule(private val reactContext: ReactApplicationContext) :
     }
   }
 
+  @ReactMethod
+  fun stopAlarm(promise: Promise) {
+    try {
+      MedicationAlarmReceiver.stopActive(reactContext)
+      promise.resolve(null)
+    } catch (error: Exception) {
+      promise.reject("STOP_FAILED", error)
+    }
+  }
+
   private fun openSettings(action: String, promise: Promise) {
     try {
       val intent = Intent(action).apply { data = Uri.parse("package:${reactContext.packageName}") }
@@ -225,6 +235,7 @@ class MedicationAlarmReceiver : BroadcastReceiver() {
   companion object {
     private const val ALARM_CHANNEL = "eat-yo-native-alarm-v3"
     private var activeRingtone: android.media.Ringtone? = null
+    private var activeNotificationId: Int? = null
 
     fun postNotification(context: Context, title: String, body: String, sound: String, itemId: String, dueAt: String) {
       val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
@@ -254,6 +265,7 @@ class MedicationAlarmReceiver : BroadcastReceiver() {
         .setDefaults(NotificationCompat.DEFAULT_ALL)
         .setVibrate(longArrayOf(0, 450, 120, 450))
       manager.notify(requestCode, builder.build())
+      activeNotificationId = requestCode
       AlarmPermissionModule.recordEvent(context, "notification_posted")
 
       val alarmAttributes = AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_ALARM).setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION).build()
@@ -262,6 +274,7 @@ class MedicationAlarmReceiver : BroadcastReceiver() {
         activeRingtone?.stop()
         activeRingtone = RingtoneManager.getRingtone(context, alarmUri)
         activeRingtone?.audioAttributes = alarmAttributes
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) activeRingtone?.isLooping = true
         activeRingtone?.play()
         AlarmPermissionModule.recordEvent(context, "ringtone_started")
       }
@@ -275,6 +288,14 @@ class MedicationAlarmReceiver : BroadcastReceiver() {
         }
         AlarmPermissionModule.recordEvent(context, "vibration_started")
       }
+    }
+
+    fun stopActive(context: Context) {
+      activeRingtone?.stop()
+      activeRingtone = null
+      activeNotificationId?.let { (context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).cancel(it) }
+      activeNotificationId = null
+      AlarmPermissionModule.recordEvent(context, "alarm_stopped")
     }
 
     private fun createChannels(context: Context, manager: NotificationManager) {

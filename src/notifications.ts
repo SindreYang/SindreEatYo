@@ -20,6 +20,7 @@ type NativeAlarmModule = {
   cancelAllAlarms?: () => Promise<void>;
   getStatus?: () => Promise<{ exactAlarm: boolean; fullScreen: boolean; notifications: boolean; batteryOptimizationIgnored?: boolean; lastAlarmEvent?: string; lastAlarmAt?: string }>;
   testAlarm?: () => Promise<void>;
+  stopAlarm?: () => Promise<void>;
   openBatteryOptimizationSettings?: () => Promise<void>;
   openAppDetailsSettings?: () => Promise<void>;
 };
@@ -247,4 +248,8 @@ export async function testAlarm() {
     await addDebugLog('test_alarm_failed', { error: error instanceof Error ? error.message : String(error) }, 'error');
     throw error;
   }
+}
+
+export async function stopAlarm() {
+  if (Platform.OS === 'android' && nativeAlarm?.stopAlarm) await nativeAlarm.stopAlarm();
 }

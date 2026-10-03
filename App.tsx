@@ -21,7 +21,7 @@ import {
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { emptyItem, PendingDose, AppData, YoItem } from './src/types';
 import { loadData, saveData } from './src/storage';
-import { getNativeAlarmStatus, notificationContent, openBatteryOptimizationSettings, prepareNotifications, rescheduleAll, testAlarm } from './src/notifications';
+import { getNativeAlarmStatus, notificationContent, openBatteryOptimizationSettings, prepareNotifications, rescheduleAll, stopAlarm, testAlarm } from './src/notifications';
 import { addDebugLog, exportDebugLog } from './src/debugLog';
 
 type Tab = 'today' | 'items' | 'settings';
@@ -201,10 +201,12 @@ function AppContent() {
   const itemById = (id: string) => data.items.find((item) => item.id === id);
 
   const confirmDose = async (dose: PendingDose) => {
+    await stopAlarm();
     await updateData({ ...data, pendingDoses: data.pendingDoses.map((candidate) => candidate.id === dose.id ? { ...candidate, status: 'confirmed', confirmedAt: new Date().toISOString() } : candidate) });
   };
 
   const snoozeDose = async (dose: PendingDose) => {
+    await stopAlarm();
     const item = itemById(dose.itemId);
     if (!item) return;
     await updateData({ ...data, pendingDoses: data.pendingDoses.map((candidate) => candidate.id === dose.id ? { ...candidate, status: 'snoozed' } : candidate) });
