@@ -11,7 +11,6 @@ import {
   Modal,
   Platform,
   Pressable,
-  SafeAreaView,
   ScrollView,
   StyleSheet,
   Switch,
@@ -19,9 +18,11 @@ import {
   TextInput,
   View,
 } from 'react-native';
+import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { emptyItem, PendingDose, AppData, YoItem, ReminderSound } from './src/types';
 import { loadData, saveData } from './src/storage';
-import { notificationContent, prepareNotifications, rescheduleAll, soundLabels } from './src/notifications';
+import { getNativeAlarmStatus, notificationContent, prepareNotifications, rescheduleAll, soundLabels, testAlarm } from './src/notifications';
+import { addDebugLog, exportDebugLog } from './src/debugLog';
 
 type Tab = 'today' | 'items' | 'settings';
 type PickerKind = 'interval' | 'time' | 'delay' | 'sound' | null;
@@ -50,17 +51,30 @@ const delayOptions = [5, 10, 15, 30, 60].map((minutes) => ({ value: String(minut
 const soundOptions = (Object.keys(soundLabels) as ReminderSound[]).map((value) => ({ value, label: soundLabels[value] }));
 const APP_PACKAGE = 'com.sindreyang.sindreeatyo';
 
-async function openAlarmPermissionSettings() {
+type AlarmStatus = { exactAlarm: boolean; fullScreen: boolean; notifications: boolean };
+
+async function openAlarmPermissionSettings(status: AlarmStatus | null) {
   if (Platform.OS !== 'android') return;
   try {
-    await IntentLauncher.startActivityAsync(IntentLauncher.ActivityAction.REQUEST_SCHEDULE_EXACT_ALARM, { data: `package:${APP_PACKAGE}` });
+    if (!status?.exactAlarm) {
+      await IntentLauncher.startActivityAsync(IntentLauncher.ActivityAction.REQUEST_SCHEDULE_EXACT_ALARM, { data: `package:${APP_PACKAGE}` });
+      return;
+    }
   } catch {
     // Some Android versions do not expose the exact-alarm settings page.
   }
   try {
-    await IntentLauncher.startActivityAsync(IntentLauncher.ActivityAction.MANAGE_APP_USE_FULL_SCREEN_INTENT, { data: `package:${APP_PACKAGE}` });
+    if (!status?.fullScreen) {
+      await IntentLauncher.startActivityAsync(IntentLauncher.ActivityAction.MANAGE_APP_USE_FULL_SCREEN_INTENT, { data: `package:${APP_PACKAGE}` });
+      return;
+    }
   } catch {
     // Android versions without the full-screen permission page still use the lock-screen channel.
+  }
+  try {
+    await IntentLauncher.startActivityAsync(IntentLauncher.ActivityAction.APP_NOTIFICATION_SETTINGS, { data: `package:${APP_PACKAGE}` });
+  } catch {
+    // The system notification page is optional on old Android versions.
   }
 }
 
@@ -116,13 +130,16 @@ function recoverMissedDoses(data: AppData): AppData {
 }
 
 export default function App() {
+  return <SafeAreaProvider><AppContent /></SafeAreaProvider>;
+}
+
+function AppContent() {
   const [tab, setTab] = useState<Tab>('today');
   const [data, setData] = useState<AppData>({ items: [], pendingDoses: [] });
   const [ready, setReady] = useState(false);
   const [editing, setEditing] = useState<YoItem | null>(null);
-  const [batchMode, setBatchMode] = useState(false);
-  const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [notificationGranted, setNotificationGranted] = useState(false);
+  const [alarmStatus, setAlarmStatus] = useState<AlarmStatus | null>(null);
 
   useEffect(() => {
     let mounted = true;
@@ -134,6 +151,8 @@ export default function App() {
       setData(recovered);
       await saveData(recovered);
       setNotificationGranted(granted);
+      setAlarmStatus(await getNativeAlarmStatus());
+      await addDebugLog('app_ready', { notificationGranted: granted, itemCount: recovered.items.length, pendingCount: recovered.pendingDoses.filter((dose) => dose.status === 'pending').length });
       setReady(true);
       await rescheduleAll(recovered.items);
     };
@@ -157,6 +176,7 @@ export default function App() {
     const response = Notifications.addNotificationResponseReceivedListener((event) => addPendingFromNotification(event.notification));
     void Notifications.getPresentedNotificationsAsync().then((presented) => presented.forEach((notification) => addPendingFromNotification(notification)));
     const appState = AppState.addEventListener('change', (state) => {
+      if (state === 'active') void getNativeAlarmStatus().then(setAlarmStatus);
       setData((previous) => {
         const next = state === 'active' ? recoverMissedDoses(previous) : { ...previous, lastCheckedAt: new Date().toISOString() };
         void saveData(next);
@@ -203,10 +223,10 @@ export default function App() {
       : [...data.items, { ...normalized, id: makeId('medicine'), createdAt: new Date().toISOString() }];
     await updateData({ ...data, items: nextItems });
     setEditing(null);
-    if (isFirstItem && Platform.OS === 'android') {
+    if (isFirstItem && Platform.OS === 'android' && alarmStatus && (!alarmStatus.exactAlarm || !alarmStatus.fullScreen)) {
       Alert.alert('开启闹钟级提醒', '为了在锁屏、息屏甚至省电模式下准时响铃，请开启精确闹钟和全屏提醒权限。', [
         { text: '稍后设置', style: 'cancel' },
-        { text: '现在开启', onPress: () => void openAlarmPermissionSettings() },
+        { text: '现在开启', onPress: () => void openAlarmPermissionSettings(alarmStatus) },
       ]);
     }
   };
@@ -218,11 +238,10 @@ export default function App() {
     ]);
   };
 
-  const applyBatch = async (bellCount: 1 | 2) => {
-    if (!selectedIds.length) return;
-    await updateData({ ...data, items: data.items.map((item) => selectedIds.includes(item.id) ? { ...item, bellCount } : item) });
-    setSelectedIds([]);
-    setBatchMode(false);
+  const refreshAlarmStatus = async () => {
+    const next = await getNativeAlarmStatus();
+    if (next) setAlarmStatus(next);
+    return next;
   };
 
   if (!ready) {
@@ -237,9 +256,9 @@ export default function App() {
         <View style={styles.headerBadge}><Text style={styles.headerBadgeText}>药</Text></View>
       </View>
       <View style={styles.content}>
-        {tab === 'today' && <TodayScreen pending={pending} itemById={itemById} onConfirm={confirmDose} onSnooze={snoozeDose} onAdd={() => setEditing(emptyItem())} />}
-        {tab === 'items' && <ItemsScreen items={data.items} batchMode={batchMode} selectedIds={selectedIds} onEdit={setEditing} onDelete={deleteItem} onAdd={() => setEditing(emptyItem())} onBatch={() => setBatchMode((value) => !value)} onToggle={(id) => setSelectedIds((ids) => ids.includes(id) ? ids.filter((value) => value !== id) : [...ids, id])} onApplyBatch={applyBatch} />}
-        {tab === 'settings' && <SettingsScreen notificationGranted={notificationGranted} onRequest={async () => setNotificationGranted(await prepareNotifications())} />}
+        {tab === 'today' && <TodayScreen pending={pending} hasItems={data.items.length > 0} itemById={itemById} onConfirm={confirmDose} onSnooze={snoozeDose} onAdd={() => setEditing(emptyItem())} />}
+        {tab === 'items' && <ItemsScreen items={data.items} onEdit={setEditing} onDelete={deleteItem} onAdd={() => setEditing(emptyItem())} />}
+        {tab === 'settings' && <SettingsScreen notificationGranted={notificationGranted} alarmStatus={alarmStatus} onRequest={async () => { setNotificationGranted(await prepareNotifications()); await refreshAlarmStatus(); }} onOpenAlarm={() => void openAlarmPermissionSettings(alarmStatus)} onTest={() => void testAlarm().then(() => addDebugLog('test_alarm_requested'))} onExport={() => void exportDebugLog()} />}
       </View>
       <View style={styles.tabs}>
         <TabButton icon="⌂" label="今日" active={tab === 'today'} onPress={() => setTab('today')} />
@@ -251,12 +270,12 @@ export default function App() {
   );
 }
 
-function TodayScreen({ pending, itemById, onConfirm, onSnooze, onAdd }: { pending: PendingDose[]; itemById: (id: string) => YoItem | undefined; onConfirm: (dose: PendingDose) => void; onSnooze: (dose: PendingDose) => void; onAdd: () => void }) {
+function TodayScreen({ pending, hasItems, itemById, onConfirm, onSnooze, onAdd }: { pending: PendingDose[]; hasItems: boolean; itemById: (id: string) => YoItem | undefined; onConfirm: (dose: PendingDose) => void; onSnooze: (dose: PendingDose) => void; onAdd: () => void }) {
   return <ScrollView contentContainerStyle={styles.scroll}>
     <View style={styles.dateRow}><View><Text style={styles.greeting}>今天也要按时吃药</Text><Text style={styles.date}>{new Date().toLocaleDateString('zh-CN', { month: 'long', day: 'numeric', weekday: 'long' })}</Text></View><Text style={styles.sun}>✦</Text></View>
     <View style={styles.summary}><View style={styles.summaryIcon}><Text>💊</Text></View><Text style={styles.summaryNumber}>{pending.length}</Text><View><Text style={styles.summaryTitle}>项待确认</Text><Text style={styles.summarySub}>{pending.length ? '确认后才算完成哦' : '今天目前都完成啦'}</Text></View></View>
     <Text style={styles.sectionTitle}>待确认</Text>
-    {pending.length === 0 ? <EmptyState onAdd={onAdd} /> : pending.map((dose) => {
+    {pending.length === 0 ? <TodayEmptyState hasItems={hasItems} onAdd={onAdd} /> : pending.map((dose) => {
       const item = itemById(dose.itemId);
       if (!item) return null;
       return <View style={styles.doseCard} key={dose.id}><View style={styles.doseIcon}><Text>💊</Text></View><View style={styles.doseInfo}><Text style={styles.doseName}>{item.name}</Text><Text style={styles.doseNote}>{item.note || '没有备注'}</Text><Text style={styles.doseTime}>{formatTime(new Date(dose.dueAt))} · 等待确认</Text></View><View style={styles.doseActions}><Pressable style={styles.confirmButton} onPress={() => onConfirm(dose)}><Text style={styles.confirmText}>确认已吃药</Text></Pressable><Pressable onPress={() => onSnooze(dose)}><Text style={styles.snooze}>稍后 10 分钟</Text></Pressable></View></View>;
@@ -269,16 +288,23 @@ function EmptyState({ onAdd }: { onAdd: () => void }) {
   return <View style={styles.empty}><Text style={styles.emptyEmoji}>💊</Text><Text style={styles.emptyTitle}>现在没有待确认药品</Text><Text style={styles.muted}>添加药品并设置提醒，时间到了我会叫你</Text><Pressable style={styles.primaryButton} onPress={onAdd}><Text style={styles.primaryText}>添加药品</Text></Pressable></View>;
 }
 
-function ItemsScreen({ items, batchMode, selectedIds, onEdit, onDelete, onAdd, onBatch, onToggle, onApplyBatch }: { items: YoItem[]; batchMode: boolean; selectedIds: string[]; onEdit: (item: YoItem) => void; onDelete: (item: YoItem) => void; onAdd: () => void; onBatch: () => void; onToggle: (id: string) => void; onApplyBatch: (count: 1 | 2) => void }) {
+function TodayEmptyState({ hasItems, onAdd }: { hasItems: boolean; onAdd: () => void }) {
+  if (hasItems) {
+    return <View style={styles.empty}><Text style={styles.emptyEmoji}>✅</Text><Text style={styles.emptyTitle}>今天暂时没有待确认药品</Text><Text style={styles.muted}>提醒会按计划继续执行，有新的提醒会显示在这里。</Text></View>;
+  }
+  return <EmptyState onAdd={onAdd} />;
+}
+
+function ItemsScreen({ items, onEdit, onDelete, onAdd }: { items: YoItem[]; onEdit: (item: YoItem) => void; onDelete: (item: YoItem) => void; onAdd: () => void }) {
   return <View style={styles.screen}>
-    <View style={styles.toolbar}><Text style={styles.sectionTitle}>我的药品</Text><View style={styles.toolbarButtons}><Pressable onPress={onBatch}><Text style={styles.link}>{batchMode ? '完成' : '批量设置'}</Text></Pressable><Pressable style={styles.addCircle} onPress={onAdd}><Text style={styles.addText}>＋</Text></Pressable></View></View>
-    {batchMode && <View style={styles.batchBar}><Text style={styles.batchText}>已选 {selectedIds.length} 种</Text><Pressable disabled={!selectedIds.length} onPress={() => onApplyBatch(1)}><Text style={styles.batchAction}>响铃1次</Text></Pressable><Pressable disabled={!selectedIds.length} onPress={() => onApplyBatch(2)}><Text style={styles.batchAction}>响铃2次</Text></Pressable></View>}
-    <FlatList data={items} keyExtractor={(item) => item.id} contentContainerStyle={styles.list} ListEmptyComponent={<EmptyState onAdd={onAdd} />} renderItem={({ item }) => <Pressable style={styles.itemCard} onPress={() => batchMode ? onToggle(item.id) : onEdit(item)}><View style={[styles.itemIcon, !item.enabled && { backgroundColor: '#EEE' }]}><Text>💊</Text></View><View style={styles.itemMain}><Text style={styles.itemName}>{item.name}</Text><Text style={styles.itemNote}>{item.note || '点击添加备注'}</Text><Text style={styles.itemRule}>{item.mode === 'interval' ? `每 ${item.intervalHours} 小时` : item.fixedTimes.join('、')}</Text></View>{batchMode ? <View style={[styles.checkbox, selectedIds.includes(item.id) && styles.checkboxOn]}><Text style={styles.checkboxText}>{selectedIds.includes(item.id) ? '✓' : ''}</Text></View> : <View style={styles.itemRight}><Text style={styles.bell}>{item.bellCount === 2 ? '🔔🔔' : '🔔'}</Text><Pressable hitSlop={8} onPress={() => onDelete(item)}><Text style={styles.delete}>删除</Text></Pressable></View>}</Pressable>} />
+    <View style={styles.toolbar}><Text style={styles.sectionTitle}>我的药品</Text><Pressable style={styles.addMedicineButton} onPress={onAdd}><Text style={styles.addMedicineText}>＋ 添加药品</Text></Pressable></View>
+    <FlatList data={items} keyExtractor={(item) => item.id} contentContainerStyle={styles.list} ListEmptyComponent={<EmptyState onAdd={onAdd} />} renderItem={({ item }) => <View style={styles.itemCard}><View style={[styles.itemIcon, !item.enabled && { backgroundColor: '#EEE' }]}><Text>💊</Text></View><Pressable style={styles.itemMain} onPress={() => onEdit(item)}><Text style={styles.itemName}>{item.name}</Text><Text style={styles.itemNote}>{item.note || '点击修改备注'}</Text><Text style={styles.itemRule}>{item.mode === 'interval' ? `每 ${item.intervalHours} 小时` : item.fixedTimes.join('、')}</Text></Pressable><View style={styles.itemRight}><Text style={styles.bell}>{item.bellCount === 2 ? '🔔🔔' : '🔔'}</Text><View style={styles.itemActions}><Pressable style={styles.itemActionButton} onPress={() => onEdit(item)}><Text style={styles.editText}>修改</Text></Pressable><Pressable style={styles.itemActionButton} onPress={() => onDelete(item)}><Text style={styles.delete}>删除</Text></Pressable></View></View></View>} />
   </View>;
 }
 
-function SettingsScreen({ notificationGranted, onRequest }: { notificationGranted: boolean; onRequest: () => void }) {
-  return <ScrollView contentContainerStyle={styles.scroll}><Text style={styles.sectionTitle}>设置</Text><View style={styles.settingCard}><Text style={styles.settingTitle}>提醒权限</Text><Text style={styles.settingSub}>{notificationGranted ? '已允许通知，时间到了会提醒你' : '还没有允许通知，提醒可能不会响'}</Text><Pressable style={styles.secondaryButton} onPress={onRequest}><Text style={styles.secondaryText}>{notificationGranted ? '重新检查通知' : '开启通知权限'}</Text></Pressable><Pressable style={styles.alarmPermissionButton} onPress={() => void openAlarmPermissionSettings()}><Text style={styles.alarmPermissionText}>开启闹钟级权限</Text></Pressable><Text style={styles.permissionHint}>建议开启精确闹钟与锁屏全屏提醒，关屏时也能响铃和振动。</Text></View><View style={styles.settingCard}><Text style={styles.settingTitle}>关于吃哟咯</Text><Text style={styles.settingSub}>每种药品都有自己的确认状态。系统通知被划掉或错过后，App 仍会保留“待确认”，直到你点击“确认已吃药”。</Text></View><View style={styles.settingCard}><Text style={styles.settingTitle}>吃哟咯</Text><Text style={styles.settingSub}>按时吃药提醒 · v0.1.0</Text></View></ScrollView>;
+function SettingsScreen({ notificationGranted, alarmStatus, onRequest, onOpenAlarm, onTest, onExport }: { notificationGranted: boolean; alarmStatus: AlarmStatus | null; onRequest: () => void; onOpenAlarm: () => void; onTest: () => void; onExport: () => void }) {
+  const alarmReady = Boolean(alarmStatus?.exactAlarm && alarmStatus?.fullScreen);
+  return <ScrollView contentContainerStyle={styles.scroll}><Text style={styles.sectionTitle}>设置</Text><View style={styles.settingCard}><Text style={styles.settingTitle}>提醒权限</Text><Text style={styles.settingSub}>{notificationGranted ? '通知已允许' : '还没有允许通知，提醒可能不会响'}</Text><View style={styles.statusRow}><Text style={styles.statusDot}>{notificationGranted ? '●' : '○'}</Text><Text style={styles.statusText}>{notificationGranted ? '通知提醒已开启' : '需要开启通知提醒'}</Text></View><Pressable style={styles.secondaryButton} onPress={onRequest}><Text style={styles.secondaryText}>{notificationGranted ? '检查通知设置' : '开启通知权限'}</Text></Pressable><View style={styles.permissionDivider} /><Text style={styles.settingTitle}>闹钟级提醒</Text><Text style={styles.settingSub}>{alarmReady ? '已开启，锁屏和息屏时也可以响铃、振动' : '还需要开启系统闹钟权限，才能尽量按时响铃'}</Text><View style={styles.statusRow}><Text style={styles.statusDot}>{alarmReady ? '●' : '○'}</Text><Text style={[styles.statusText, alarmReady && styles.statusReady]}>{alarmReady ? '闹钟级权限已开启' : '闹钟级权限未完成'}</Text></View><Pressable style={styles.alarmPermissionButton} onPress={onOpenAlarm}><Text style={styles.alarmPermissionText}>{alarmReady ? '打开系统提醒设置' : '去开启闹钟权限'}</Text></Pressable><Pressable style={styles.testButton} onPress={onTest}><Text style={styles.testButtonText}>立即测试响铃和振动</Text></Pressable></View><View style={styles.settingCard}><Text style={styles.settingTitle}>导出调试日志</Text><Text style={styles.settingSub}>遇到没有响铃、没有通知或权限显示不对时，导出后发给我。日志不包含药品名称和备注。</Text><Pressable style={styles.secondaryButton} onPress={onExport}><Text style={styles.secondaryText}>导出调试日志</Text></Pressable></View><View style={styles.settingCard}><Text style={styles.settingTitle}>关于吃哟咯</Text><Text style={styles.settingSub}>每种药品都有自己的确认状态。系统通知被划掉或错过后，App 仍会保留“待确认”，直到你点击“确认已吃药”。</Text></View><View style={styles.settingCard}><Text style={styles.settingTitle}>吃哟咯</Text><Text style={styles.settingSub}>按时吃药提醒 · v0.1.0</Text></View></ScrollView>;
 }
 
 function TabButton({ icon, label, active, onPress }: { icon: string; label: string; active: boolean; onPress: () => void }) { return <Pressable style={styles.tab} onPress={onPress}><Text style={[styles.tabIcon, active && styles.tabActive]}>{icon}</Text><Text style={[styles.tabLabel, active && styles.tabActive]}>{label}</Text></Pressable>; }
@@ -304,6 +330,7 @@ function ItemEditor({ item, onClose, onSave }: { item: YoItem | null; onClose: (
   const selectedTime = draft.fixedTimes[editingTimeIndex] ?? '08:00';
 
   return <Modal visible={Boolean(item)} animationType="slide" presentationStyle="fullScreen" onRequestClose={onClose}>
+    <SafeAreaView style={styles.modalSafe} edges={['top', 'bottom']}>
     <KeyboardAvoidingView style={styles.modal} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
       <View style={styles.modalHeader}><Pressable hitSlop={10} onPress={onClose}><Text style={styles.link}>取消</Text></Pressable><Text style={styles.modalTitle}>{draft.id ? '编辑药品' : '添加药品'}</Text><View style={styles.headerSpacer} /></View>
       <ScrollView style={styles.formScroll} contentContainerStyle={styles.form} keyboardShouldPersistTaps="handled">
@@ -325,18 +352,19 @@ function ItemEditor({ item, onClose, onSave }: { item: YoItem | null; onClose: (
       <OptionPicker visible={picker === 'delay'} title="选择第二次提醒间隔" options={delayOptions} value={String(draft.secondBellDelayMinutes)} onSelect={(value) => set('secondBellDelayMinutes', Number(value))} onClose={() => setPicker(null)} />
       <OptionPicker visible={picker === 'sound'} title="选择提醒铃声" options={soundOptions} value={sound} onSelect={(value) => set('sound', value as ReminderSound)} onClose={() => setPicker(null)} />
     </KeyboardAvoidingView>
+    </SafeAreaView>
   </Modal>;
 }
 
 function Segment({ label, active, onPress }: { label: string; active: boolean; onPress: () => void }) { return <Pressable onPress={onPress} style={[styles.segmentButton, active && styles.segmentActive]}><Text style={[styles.segmentText, active && styles.segmentTextActive]}>{label}</Text></Pressable>; }
 
 const styles = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: colors.bg }, loading: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.bg }, loadingIcon: { width: 78, height: 78, borderRadius: 22, marginBottom: 12 }, content: { flex: 1 },
+  safe: { flex: 1, backgroundColor: colors.bg }, modalSafe: { flex: 1, backgroundColor: colors.bg }, loading: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.bg }, loadingIcon: { width: 78, height: 78, borderRadius: 22, marginBottom: 12 }, content: { flex: 1 },
   header: { paddingHorizontal: 20, paddingTop: 12, paddingBottom: 10, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }, brandRow: { flexDirection: 'row', alignItems: 'center' }, brandIcon: { width: 42, height: 42, borderRadius: 13, marginRight: 10 }, logo: { color: colors.ink, fontSize: 27, fontWeight: '800', letterSpacing: 1 }, subtitle: { color: colors.muted, fontSize: 12, marginTop: 2 }, headerBadge: { width: 42, height: 42, borderRadius: 21, backgroundColor: colors.tealSoft, alignItems: 'center', justifyContent: 'center' }, headerBadgeText: { color: colors.teal, fontSize: 20, fontWeight: '800' },
   scroll: { padding: 20, paddingBottom: 35 }, screen: { flex: 1, paddingHorizontal: 20 }, dateRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 18 }, greeting: { color: colors.ink, fontSize: 21, fontWeight: '800' }, date: { color: colors.muted, marginTop: 5 }, sun: { color: colors.coral, fontSize: 32 }, summary: { backgroundColor: colors.coral, borderRadius: 22, padding: 17, flexDirection: 'row', alignItems: 'center', marginBottom: 24 }, summaryIcon: { width: 42, height: 42, borderRadius: 14, backgroundColor: '#FFF1EC', alignItems: 'center', justifyContent: 'center', marginRight: 12 }, summaryNumber: { color: '#FFF', fontSize: 38, fontWeight: '800', marginRight: 12 }, summaryTitle: { color: '#FFF', fontSize: 18, fontWeight: '700' }, summarySub: { color: '#FFF6F2', marginTop: 4 }, sectionTitle: { color: colors.ink, fontSize: 20, fontWeight: '800', marginBottom: 12 },
   doseCard: { backgroundColor: colors.card, borderRadius: 20, padding: 14, marginBottom: 12, flexDirection: 'row', alignItems: 'center', shadowColor: '#D6B9AB', shadowOpacity: 0.12, shadowRadius: 9, elevation: 2 }, doseIcon: { width: 48, height: 48, borderRadius: 16, backgroundColor: colors.tealSoft, alignItems: 'center', justifyContent: 'center', marginRight: 12 }, doseInfo: { flex: 1 }, doseName: { color: colors.ink, fontSize: 17, fontWeight: '800' }, doseNote: { color: colors.muted, marginTop: 3 }, doseTime: { color: colors.red, fontSize: 12, marginTop: 6 }, doseActions: { alignItems: 'flex-end', marginLeft: 8 }, confirmButton: { backgroundColor: colors.teal, borderRadius: 12, paddingHorizontal: 10, paddingVertical: 9 }, confirmText: { color: '#FFF', fontWeight: '700', fontSize: 12 }, snooze: { color: colors.muted, fontSize: 11, marginTop: 9 }, tip: { flexDirection: 'row', padding: 14, backgroundColor: '#FFF0D9', borderRadius: 16, marginTop: 10 }, tipIcon: { fontSize: 18, color: colors.coral, marginRight: 8 }, tipText: { color: '#886A4A', flex: 1, lineHeight: 19, fontSize: 12 }, empty: { alignItems: 'center', backgroundColor: colors.card, borderRadius: 22, padding: 28 }, emptyEmoji: { fontSize: 38, marginBottom: 10 }, emptyTitle: { color: colors.ink, fontWeight: '800', fontSize: 17, marginBottom: 5 }, muted: { color: colors.muted }, primaryButton: { backgroundColor: colors.coral, paddingHorizontal: 22, paddingVertical: 12, borderRadius: 14, marginTop: 18 }, primaryText: { color: '#FFF', fontWeight: '800' },
-  tabs: { height: 75, backgroundColor: '#FFF', borderTopWidth: 1, borderTopColor: colors.line, flexDirection: 'row', justifyContent: 'space-around', paddingTop: 9 }, tab: { alignItems: 'center', flex: 1 }, tabIcon: { fontSize: 21, color: '#B8A59D' }, tabLabel: { color: '#B8A59D', fontSize: 12, marginTop: 3 }, tabActive: { color: colors.coral, fontWeight: '800' }, toolbar: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingTop: 20 }, toolbarButtons: { flexDirection: 'row', alignItems: 'center', gap: 15 }, link: { color: colors.coral, fontWeight: '800' }, addCircle: { width: 38, height: 38, borderRadius: 19, backgroundColor: colors.coral, alignItems: 'center', justifyContent: 'center' }, addText: { color: '#FFF', fontSize: 24, lineHeight: 28 }, list: { paddingVertical: 10, paddingBottom: 35 }, itemCard: { backgroundColor: colors.card, borderRadius: 18, padding: 14, marginBottom: 10, flexDirection: 'row', alignItems: 'center' }, itemIcon: { backgroundColor: colors.tealSoft, width: 46, height: 46, borderRadius: 15, alignItems: 'center', justifyContent: 'center', marginRight: 12 }, itemMain: { flex: 1 }, itemName: { color: colors.ink, fontSize: 16, fontWeight: '800' }, itemNote: { color: colors.muted, fontSize: 12, marginTop: 3 }, itemRule: { color: colors.coral, fontSize: 12, marginTop: 6 }, itemRight: { alignItems: 'flex-end' }, bell: { fontSize: 13, marginBottom: 7 }, delete: { color: colors.red, fontSize: 12 }, batchBar: { backgroundColor: colors.coralSoft, borderRadius: 14, marginTop: 2, padding: 12, flexDirection: 'row', alignItems: 'center', gap: 14 }, batchText: { color: colors.ink, flex: 1, fontWeight: '700' }, batchAction: { color: colors.coral, fontWeight: '800', fontSize: 12 }, checkbox: { width: 25, height: 25, borderRadius: 8, borderWidth: 2, borderColor: colors.line, alignItems: 'center', justifyContent: 'center' }, checkboxOn: { backgroundColor: colors.coral, borderColor: colors.coral }, checkboxText: { color: '#FFF', fontWeight: '800' },
-  settingCard: { backgroundColor: colors.card, borderRadius: 20, padding: 18, marginBottom: 12 }, settingTitle: { color: colors.ink, fontWeight: '800', fontSize: 16 }, settingSub: { color: colors.muted, lineHeight: 20, marginTop: 7 }, secondaryButton: { alignSelf: 'flex-start', borderWidth: 1, borderColor: colors.coral, borderRadius: 12, paddingHorizontal: 14, paddingVertical: 9, marginTop: 14 }, secondaryText: { color: colors.coral, fontWeight: '800' }, alarmPermissionButton: { alignSelf: 'flex-start', borderWidth: 1, borderColor: colors.teal, borderRadius: 12, paddingHorizontal: 14, paddingVertical: 9, marginTop: 10 }, alarmPermissionText: { color: colors.teal, fontWeight: '800' }, permissionHint: { color: colors.muted, fontSize: 12, lineHeight: 18, marginTop: 9 },
+  tabs: { minHeight: 75, backgroundColor: '#FFF', borderTopWidth: 1, borderTopColor: colors.line, flexDirection: 'row', justifyContent: 'space-around', paddingTop: 9 }, tab: { alignItems: 'center', justifyContent: 'center', flex: 1, minHeight: 58 }, tabIcon: { fontSize: 21, color: '#B8A59D' }, tabLabel: { color: '#B8A59D', fontSize: 12, marginTop: 3 }, tabActive: { color: colors.coral, fontWeight: '800' }, toolbar: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingTop: 20, paddingBottom: 5 }, link: { color: colors.coral, fontWeight: '800', minHeight: 44, textAlignVertical: 'center' }, addMedicineButton: { minHeight: 44, paddingHorizontal: 12, borderRadius: 13, backgroundColor: colors.coral, alignItems: 'center', justifyContent: 'center' }, addMedicineText: { color: '#FFF', fontWeight: '800', fontSize: 14 }, list: { paddingVertical: 10, paddingBottom: 35 }, itemCard: { backgroundColor: colors.card, borderRadius: 18, padding: 12, marginBottom: 10, flexDirection: 'row', alignItems: 'center' }, itemIcon: { backgroundColor: colors.tealSoft, width: 46, height: 46, borderRadius: 15, alignItems: 'center', justifyContent: 'center', marginRight: 10 }, itemMain: { flex: 1, minHeight: 58, justifyContent: 'center' }, itemName: { color: colors.ink, fontSize: 16, fontWeight: '800' }, itemNote: { color: colors.muted, fontSize: 12, marginTop: 3 }, itemRule: { color: colors.coral, fontSize: 12, marginTop: 6 }, itemRight: { alignItems: 'flex-end', marginLeft: 5 }, bell: { fontSize: 13, marginBottom: 2 }, itemActions: { flexDirection: 'row', alignItems: 'center' }, itemActionButton: { minWidth: 44, minHeight: 44, alignItems: 'center', justifyContent: 'center' }, editText: { color: colors.teal, fontSize: 12, fontWeight: '800' }, delete: { color: colors.red, fontSize: 12, fontWeight: '700' },
+  settingCard: { backgroundColor: colors.card, borderRadius: 20, padding: 18, marginBottom: 12 }, settingTitle: { color: colors.ink, fontWeight: '800', fontSize: 16 }, settingSub: { color: colors.muted, lineHeight: 20, marginTop: 7 }, statusRow: { flexDirection: 'row', alignItems: 'center', marginTop: 12 }, statusDot: { color: colors.teal, fontSize: 17, marginRight: 7 }, statusText: { color: colors.ink, fontWeight: '700' }, statusReady: { color: colors.teal }, secondaryButton: { alignSelf: 'flex-start', minHeight: 44, borderWidth: 1, borderColor: colors.coral, borderRadius: 12, paddingHorizontal: 14, marginTop: 14, alignItems: 'center', justifyContent: 'center' }, secondaryText: { color: colors.coral, fontWeight: '800' }, permissionDivider: { height: 1, backgroundColor: colors.line, marginVertical: 18 }, alarmPermissionButton: { alignSelf: 'flex-start', minHeight: 44, borderWidth: 1, borderColor: colors.teal, borderRadius: 12, paddingHorizontal: 14, marginTop: 12, alignItems: 'center', justifyContent: 'center' }, alarmPermissionText: { color: colors.teal, fontWeight: '800' }, testButton: { alignSelf: 'flex-start', minHeight: 44, borderRadius: 12, paddingHorizontal: 14, marginTop: 10, backgroundColor: colors.coralSoft, alignItems: 'center', justifyContent: 'center' }, testButtonText: { color: colors.coral, fontWeight: '800' }, permissionHint: { color: colors.muted, fontSize: 12, lineHeight: 18, marginTop: 9 },
   modal: { flex: 1, backgroundColor: colors.bg }, modalHeader: { minHeight: 62, paddingHorizontal: 20, paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: colors.line, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#FFF' }, modalTitle: { color: colors.ink, fontWeight: '800', fontSize: 18 }, headerSpacer: { width: 36 }, formScroll: { flex: 1 }, form: { padding: 20, paddingBottom: 34 }, formIntro: { color: colors.muted, lineHeight: 20, marginBottom: 4 }, label: { color: colors.ink, fontWeight: '800', marginTop: 17, marginBottom: 8 }, helper: { color: colors.muted, fontSize: 12, marginBottom: 8 }, input: { backgroundColor: '#FFF', borderRadius: 14, borderWidth: 1, borderColor: colors.line, color: colors.ink, paddingHorizontal: 14, paddingVertical: 12, fontSize: 16 }, textarea: { minHeight: 74, textAlignVertical: 'top' }, controlBlock: { marginTop: 2 }, segment: { flexDirection: 'row', gap: 8 }, segmentButton: { flex: 1, borderRadius: 12, borderWidth: 1, borderColor: colors.line, paddingVertical: 13, alignItems: 'center', backgroundColor: '#FFF' }, segmentActive: { backgroundColor: colors.coralSoft, borderColor: colors.coral }, segmentText: { color: colors.muted, fontWeight: '700' }, segmentTextActive: { color: colors.coral }, timeRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 8 }, timeFieldWrap: { flex: 1 }, selectField: { minHeight: 49, backgroundColor: '#FFF', borderRadius: 14, borderWidth: 1, borderColor: colors.line, paddingHorizontal: 14, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }, selectText: { color: colors.ink, fontSize: 16, fontWeight: '600' }, chevron: { color: colors.coral, fontSize: 22, lineHeight: 22 }, addTimeButton: { paddingVertical: 10 }, weekdays: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 4 }, weekday: { width: 37, height: 37, borderRadius: 19, borderWidth: 1, borderColor: colors.line, backgroundColor: '#FFF', alignItems: 'center', justifyContent: 'center' }, weekdayOn: { backgroundColor: colors.coral, borderColor: colors.coral }, weekdayText: { color: colors.muted, fontWeight: '700' }, weekdayTextOn: { color: '#FFF' }, switchRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 20, paddingBottom: 4 }, switchCopy: { flex: 1 }, modalFooter: { paddingHorizontal: 20, paddingTop: 10, paddingBottom: Platform.OS === 'ios' ? 22 : 14, borderTopWidth: 1, borderTopColor: colors.line, backgroundColor: '#FFF' }, saveButton: { minHeight: 50, borderRadius: 15, backgroundColor: colors.coral, alignItems: 'center', justifyContent: 'center' }, saveButtonText: { color: '#FFF', fontSize: 16, fontWeight: '800' },
   pickerBackdrop: { flex: 1, backgroundColor: 'rgba(51,43,43,0.35)', justifyContent: 'flex-end' }, pickerSheet: { maxHeight: '78%', backgroundColor: colors.bg, borderTopLeftRadius: 24, borderTopRightRadius: 24, paddingBottom: 16 }, pickerHeader: { paddingHorizontal: 20, paddingVertical: 16, backgroundColor: '#FFF', borderTopLeftRadius: 24, borderTopRightRadius: 24, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }, pickerTitle: { color: colors.ink, fontSize: 17, fontWeight: '800' }, pickerList: { paddingHorizontal: 14, paddingTop: 10 }, pickerOption: { minHeight: 48, paddingHorizontal: 16, borderRadius: 13, backgroundColor: '#FFF', marginBottom: 7, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }, pickerOptionOn: { backgroundColor: colors.coralSoft, borderWidth: 1, borderColor: colors.coral }, pickerOptionText: { color: colors.ink, fontSize: 16 }, pickerOptionTextOn: { color: colors.coral, fontWeight: '800' }, check: { color: colors.coral, fontSize: 20, fontWeight: '800' },
 });

@@ -1,7 +1,28 @@
 import * as Notifications from 'expo-notifications';
 import { AndroidAudioContentType, AndroidAudioUsage } from 'expo-notifications';
 import { Platform } from 'react-native';
+import { NativeModules } from 'react-native';
 import { ReminderSound, YoItem } from './types';
+import { addDebugLog } from './debugLog';
+
+type NativeAlarmRecord = {
+  id: string;
+  at: number;
+  title: string;
+  body: string;
+  sound: ReminderSound;
+  itemId: string;
+  dueAt: string;
+};
+
+type NativeAlarmModule = {
+  scheduleAlarms?: (recordsJson: string) => Promise<void>;
+  cancelAllAlarms?: () => Promise<void>;
+  getStatus?: () => Promise<{ exactAlarm: boolean; fullScreen: boolean; notifications: boolean }>;
+  testAlarm?: () => Promise<void>;
+};
+
+const nativeAlarm = NativeModules.EatYoAlarm as NativeAlarmModule | undefined;
 
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
@@ -19,7 +40,9 @@ export const soundLabels: Record<ReminderSound, string> = {
 };
 
 export function channelIdFor(sound: ReminderSound = 'default') {
-  return `eat-yo-${sound}`;
+  // A new channel id is intentional: Android permanently keeps the user's
+  // old channel sound/importance settings, even after the app code changes.
+  return `eat-yo-v2-${sound}`;
 }
 
 function soundFileFor(sound: ReminderSound = 'default'): string {
@@ -28,8 +51,9 @@ function soundFileFor(sound: ReminderSound = 'default'): string {
 }
 
 export async function prepareNotifications(): Promise<boolean> {
-  if (Platform.OS === 'android') {
-    await Promise.all([
+  try {
+    if (Platform.OS === 'android') {
+      await Promise.all([
       Notifications.setNotificationChannelAsync(channelIdFor('default'), {
         name: '吃哟咯·系统默认',
         importance: Notifications.AndroidImportance.MAX,
@@ -57,14 +81,20 @@ export async function prepareNotifications(): Promise<boolean> {
         audioAttributes: { usage: AndroidAudioUsage.ALARM, contentType: AndroidAudioContentType.SONIFICATION, flags: { enforceAudibility: true, requestHardwareAudioVideoSynchronization: false } },
         lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
       }),
-    ]);
+      ]);
+    }
+    const current = await Notifications.getPermissionsAsync();
+    if (!current.granted) {
+      const requested = await Notifications.requestPermissionsAsync();
+      await addDebugLog('notification_permission_requested', { granted: requested.granted });
+      return requested.granted;
+    }
+    await addDebugLog('notification_permission_ready', { granted: true });
+    return true;
+  } catch (error) {
+    await addDebugLog('notification_prepare_failed', { error: error instanceof Error ? error.message : String(error) }, 'error');
+    return false;
   }
-  const current = await Notifications.getPermissionsAsync();
-  if (!current.granted) {
-    const requested = await Notifications.requestPermissionsAsync();
-    return requested.granted;
-  }
-  return true;
 }
 
 export function notificationContent(item: YoItem) {
@@ -107,9 +137,76 @@ function intervalTrigger(seconds: number) {
   } as Notifications.NotificationTriggerInput;
 }
 
-export async function rescheduleAll(items: YoItem[]): Promise<void> {
-  await Notifications.cancelAllScheduledNotificationsAsync();
+function addNativeRecord(records: NativeAlarmRecord[], item: YoItem, dueAt: Date, suffix: string) {
+  if (dueAt.getTime() <= Date.now()) return;
+  records.push({
+    id: `${item.id}-${dueAt.getTime()}-${suffix}`,
+    at: dueAt.getTime(),
+    title: `该吃药啦：${item.name}`,
+    body: item.note ? `${item.note}\n请进入吃哟咯确认已吃药` : '请进入吃哟咯确认已吃药',
+    sound: item.sound ?? 'default',
+    itemId: item.id,
+    dueAt: dueAt.toISOString(),
+  });
+}
+
+function nativeRecordsFor(items: YoItem[]): NativeAlarmRecord[] {
+  const now = new Date();
+  const records: NativeAlarmRecord[] = [];
+  const horizon = new Date(now.getTime() + 14 * 24 * 60 * 60 * 1000);
   for (const item of items.filter((candidate) => candidate.enabled && candidate.name.trim())) {
+    if (item.mode === 'interval') {
+      const intervalMs = Math.max(15 * 60 * 1000, item.intervalHours * 60 * 60 * 1000);
+      const origin = new Date(item.createdAt).getTime();
+      let due = Number.isFinite(origin) ? new Date(origin) : new Date(now);
+      if (due <= now) {
+        const steps = Math.floor((now.getTime() - due.getTime()) / intervalMs) + 1;
+        due = new Date(due.getTime() + steps * intervalMs);
+      }
+      for (let index = 0; index < 30; index += 1) {
+        addNativeRecord(records, item, due, `first-${index}`);
+        if (item.bellCount === 2) addNativeRecord(records, item, new Date(due.getTime() + Math.max(1, item.secondBellDelayMinutes) * 60 * 1000), `second-${index}`);
+        due = new Date(due.getTime() + intervalMs);
+      }
+      continue;
+    }
+
+    const cursor = new Date(now);
+    cursor.setHours(0, 0, 0, 0);
+    while (cursor <= horizon) {
+      const weekday = cursor.getDay() + 1;
+      const applies = item.repeatRule === 'daily' || item.weekdays.includes(weekday);
+      if (applies) {
+        for (const time of item.fixedTimes) {
+          const [hour, minute] = time.split(':').map(Number);
+          if (!Number.isFinite(hour) || !Number.isFinite(minute)) continue;
+          const due = new Date(cursor);
+          due.setHours(hour, minute, 0, 0);
+          addNativeRecord(records, item, due, 'first');
+          if (item.bellCount === 2) addNativeRecord(records, item, new Date(due.getTime() + Math.max(1, item.secondBellDelayMinutes) * 60 * 1000), 'second');
+        }
+      }
+      cursor.setDate(cursor.getDate() + 1);
+    }
+  }
+  return records;
+}
+
+export async function rescheduleAll(items: YoItem[]): Promise<void> {
+  if (Platform.OS === 'android' && nativeAlarm?.scheduleAlarms) {
+    const records = nativeRecordsFor(items);
+    try {
+      await nativeAlarm.scheduleAlarms(JSON.stringify(records));
+      await addDebugLog('native_alarms_scheduled', { itemCount: items.length, alarmCount: records.length });
+    } catch (error) {
+      await addDebugLog('native_alarm_schedule_failed', { error: error instanceof Error ? error.message : String(error) }, 'error');
+      throw error;
+    }
+    return;
+  }
+  try {
+    await Notifications.cancelAllScheduledNotificationsAsync();
+    for (const item of items.filter((candidate) => candidate.enabled && candidate.name.trim())) {
     if (item.mode === 'interval') {
       const seconds = Math.max(15 * 60, item.intervalHours * 60 * 60);
       await Notifications.scheduleNotificationAsync({ content: notificationContent(item), trigger: intervalTrigger(seconds) });
@@ -138,5 +235,24 @@ export async function rescheduleAll(items: YoItem[]): Promise<void> {
         }
       }
     }
+    }
+    await addDebugLog('expo_alarms_scheduled', { itemCount: items.length });
+  } catch (error) {
+    await addDebugLog('expo_alarm_schedule_failed', { error: error instanceof Error ? error.message : String(error) }, 'error');
+    throw error;
   }
+}
+
+export async function getNativeAlarmStatus() {
+  if (Platform.OS !== 'android' || !nativeAlarm?.getStatus) return null;
+  return nativeAlarm.getStatus();
+}
+
+export async function testAlarm() {
+  if (Platform.OS === 'android' && nativeAlarm?.testAlarm) {
+    await nativeAlarm.testAlarm();
+    return true;
+  }
+  await Notifications.scheduleNotificationAsync({ content: notificationContent({ ...({} as YoItem), id: 'test', name: '测试提醒', note: '', sound: 'urgent' }), trigger: null });
+  return true;
 }
