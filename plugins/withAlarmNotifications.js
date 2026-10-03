@@ -60,6 +60,9 @@ function withAlarmNotifications(config) {
     const mainActivityPath = path.join(packageDir, 'MainActivity.kt');
     let mainActivity = fs.readFileSync(mainActivityPath, 'utf8');
     if (!mainActivity.includes('SINDRE_ALARM_ACTIVITY')) {
+      if (!mainActivity.includes('import android.content.Intent')) {
+        mainActivity = mainActivity.replace('import android.os.Bundle', 'import android.os.Bundle\nimport android.content.Intent');
+      }
       const alarmBlock = `    // SINDRE_ALARM_ACTIVITY: wake the screen for medication alarms.\n    if (intent?.getBooleanExtra("alarmMode", false) == true) {\n      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {\n        setShowWhenLocked(true)\n        setTurnScreenOn(true)\n      }\n      window.addFlags(\n        android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON or\n          android.view.WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or\n          android.view.WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON or\n          android.view.WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD\n      )\n    }\n`;
       mainActivity = mainActivity.replace('    super.onCreate(null)', `${alarmBlock}    super.onCreate(null)`);
       const intentMethod = `\n  override fun onNewIntent(intent: Intent?) {\n    super.onNewIntent(intent)\n    if (intent?.getBooleanExtra("alarmMode", false) == true) {\n      setIntent(intent)\n    }\n  }\n`;
