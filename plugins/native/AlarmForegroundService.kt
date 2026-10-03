@@ -173,6 +173,7 @@ class AlarmForegroundService : Service() {
       .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
       .setOngoing(true)
       .setAutoCancel(false)
+      .setOnlyAlertOnce(false)
       .setFullScreenIntent(fullScreen, true)
       .setContentIntent(fullScreen)
       .setVibrate(longArrayOf(0, 450, 120, 450))
@@ -290,11 +291,13 @@ class AlarmForegroundService : Service() {
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
     val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
     val attributes = AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_ALARM).setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION).build()
+    val alarmUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
+      ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
     val alarm = NotificationChannel(ALARM_CHANNEL, "吃哟咯·闹钟提醒", NotificationManager.IMPORTANCE_HIGH).apply {
       description = "锁屏时显示并提醒吃药"
       enableVibration(true)
       vibrationPattern = longArrayOf(0, 450, 120, 450)
-      setSound(null, attributes)
+      setSound(alarmUri, attributes)
       lockscreenVisibility = NotificationCompat.VISIBILITY_PUBLIC
     }
     val background = NotificationChannel(BACKGROUND_CHANNEL, "吃哟咯·后台提醒", NotificationManager.IMPORTANCE_LOW).apply {
@@ -316,7 +319,7 @@ class AlarmForegroundService : Service() {
     const val EXTRA_ITEM_ID = "itemId"
     const val EXTRA_DUE_AT = "dueAt"
     const val EXTRA_TEST = "testAlarm"
-    private const val ALARM_CHANNEL = "eat-yo-native-alarm-v4"
+    private const val ALARM_CHANNEL = "eat-yo-native-alarm-v5"
     private const val BACKGROUND_CHANNEL = "eat-yo-native-background-v1"
     private const val ALARM_NOTIFICATION_ID = 7021
     private const val BACKGROUND_NOTIFICATION_ID = 7022
