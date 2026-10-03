@@ -29,6 +29,7 @@ export interface PendingDose {
 export interface AppData {
   items: YoItem[];
   pendingDoses: PendingDose[];
+  lastCheckedAt?: string;
 }
 
 export const emptyItem = (): YoItem => ({

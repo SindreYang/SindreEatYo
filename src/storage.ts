@@ -11,6 +11,7 @@ export async function loadData(): Promise<AppData> {
     return {
       items: Array.isArray(parsed.items) ? parsed.items.map((item) => ({ ...emptyItem(), ...(item as Partial<YoItem>), sound: (item as Partial<YoItem>).sound ?? 'default' })) : [],
       pendingDoses: Array.isArray(parsed.pendingDoses) ? parsed.pendingDoses : [],
+      lastCheckedAt: typeof parsed.lastCheckedAt === 'string' ? parsed.lastCheckedAt : undefined,
     };
   } catch {
     return { items: [], pendingDoses: [] };

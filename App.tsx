@@ -4,6 +4,7 @@ import * as IntentLauncher from 'expo-intent-launcher';
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   Alert,
+  AppState,
   FlatList,
   Image,
   KeyboardAvoidingView,
@@ -71,6 +72,49 @@ function formatTime(date = new Date()) {
   return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
+function recoverMissedDoses(data: AppData): AppData {
+  const now = new Date();
+  const start = data.lastCheckedAt ? new Date(data.lastCheckedAt) : now;
+  if (!Number.isFinite(start.getTime()) || start >= now) return { ...data, lastCheckedAt: now.toISOString() };
+  const pendingDoses = [...data.pendingDoses];
+  const hasDose = (itemId: string, dueAt: string) => pendingDoses.some((dose) => dose.itemId === itemId && dose.dueAt === dueAt);
+  const addDose = (item: YoItem, dueAt: Date) => {
+    const dueAtIso = dueAt.toISOString();
+    if (!hasDose(item.id, dueAtIso)) pendingDoses.push({ id: makeId('missed-dose'), itemId: item.id, dueAt: dueAtIso, status: 'pending' });
+  };
+
+  for (const item of data.items.filter((candidate) => candidate.enabled && candidate.name.trim())) {
+    if (item.mode === 'interval') {
+      const seconds = Math.max(15 * 60, item.intervalHours * 60 * 60);
+      let due = new Date(new Date(item.createdAt).getTime() + seconds * 1000);
+      while (due <= now) {
+        if (due > start) addDose(item, due);
+        due = new Date(due.getTime() + seconds * 1000);
+        if (pendingDoses.filter((dose) => dose.itemId === item.id).length > 30) break;
+      }
+      continue;
+    }
+
+    const cursor = new Date(start);
+    cursor.setHours(0, 0, 0, 0);
+    while (cursor <= now) {
+      const weekday = cursor.getDay() + 1;
+      const appliesToday = item.repeatRule === 'daily' || item.weekdays.includes(weekday);
+      if (appliesToday) {
+        for (const time of item.fixedTimes) {
+          const [hour, minute] = time.split(':').map(Number);
+          if (!Number.isFinite(hour) || !Number.isFinite(minute)) continue;
+          const due = new Date(cursor);
+          due.setHours(hour, minute, 0, 0);
+          if (due > start && due <= now) addDose(item, due);
+        }
+      }
+      cursor.setDate(cursor.getDate() + 1);
+    }
+  }
+  return { ...data, pendingDoses, lastCheckedAt: now.toISOString() };
+}
+
 export default function App() {
   const [tab, setTab] = useState<Tab>('today');
   const [data, setData] = useState<AppData>({ items: [], pendingDoses: [] });
@@ -84,12 +128,14 @@ export default function App() {
     let mounted = true;
     const load = async () => {
       const stored = await loadData();
+      const recovered = recoverMissedDoses(stored);
       const granted = await prepareNotifications();
       if (!mounted) return;
-      setData(stored);
+      setData(recovered);
+      await saveData(recovered);
       setNotificationGranted(granted);
       setReady(true);
-      await rescheduleAll(stored.items);
+      await rescheduleAll(recovered.items);
     };
     void load();
 
@@ -100,7 +146,8 @@ export default function App() {
         if (previous.pendingDoses.some((dose) => dose.itemId === itemId && dose.status === 'pending')) return previous;
         const next = {
           ...previous,
-          pendingDoses: [...previous.pendingDoses, { id: makeId('dose'), itemId, dueAt: new Date().toISOString(), status: 'pending' as const }],
+          pendingDoses: [...previous.pendingDoses, { id: makeId('dose'), itemId, dueAt: new Date(notification.date).toISOString(), status: 'pending' as const }],
+          lastCheckedAt: new Date().toISOString(),
         };
         void saveData(next);
         return next;
@@ -108,17 +155,27 @@ export default function App() {
     };
     const received = Notifications.addNotificationReceivedListener(addPendingFromNotification);
     const response = Notifications.addNotificationResponseReceivedListener((event) => addPendingFromNotification(event.notification));
+    void Notifications.getPresentedNotificationsAsync().then((presented) => presented.forEach((notification) => addPendingFromNotification(notification)));
+    const appState = AppState.addEventListener('change', (state) => {
+      setData((previous) => {
+        const next = state === 'active' ? recoverMissedDoses(previous) : { ...previous, lastCheckedAt: new Date().toISOString() };
+        void saveData(next);
+        return next;
+      });
+    });
     return () => {
       mounted = false;
       received.remove();
       response.remove();
+      appState.remove();
     };
   }, []);
 
   const updateData = async (next: AppData) => {
-    setData(next);
-    await saveData(next);
-    await rescheduleAll(next.items);
+    const stamped = { ...next, lastCheckedAt: new Date().toISOString() };
+    setData(stamped);
+    await saveData(stamped);
+    await rescheduleAll(stamped.items);
   };
 
   const pending = useMemo(() => data.pendingDoses.filter((dose) => dose.status === 'pending'), [data.pendingDoses]);
