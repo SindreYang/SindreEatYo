@@ -40,25 +40,30 @@ class AlarmForegroundService : Service() {
   private var audioFocusRequest: AudioFocusRequest? = null
   private var vibrator: Vibrator? = null
   private var currentNotificationId: Int? = null
+  private var activeTitle: String? = null
+  private var activeBody: String? = null
+  private var activeItemId: String? = null
+  private var activeDueAt: String? = null
 
   override fun onCreate() {
     super.onCreate()
     running = true
     createChannels()
+    restoreActiveAlarm()
   }
 
   override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
     when (intent?.action) {
       ACTION_START_ALARM -> startAlarm(intent)
       ACTION_STOP_ALARM -> stopCurrentAlarm()
-      else -> startBackgroundNotification()
+      else -> if (!hasActiveAlarm()) startBackgroundNotification()
     }
     return START_STICKY
   }
 
   override fun onDestroy() {
     handler.removeCallbacksAndMessages(null)
-    stopAlert()
+    stopAlertBurst()
     running = false
     super.onDestroy()
   }
@@ -66,6 +71,7 @@ class AlarmForegroundService : Service() {
   override fun onBind(intent: Intent?): IBinder? = null
 
   private fun startBackgroundNotification() {
+    if (hasActiveAlarm()) return
     val notification = NotificationCompat.Builder(this, BACKGROUND_CHANNEL)
       .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
       .setContentTitle("吃哟咯正在后台提醒")
@@ -80,18 +86,48 @@ class AlarmForegroundService : Service() {
   }
 
   private fun startAlarm(intent: Intent) {
-    val title = intent.getStringExtra(EXTRA_TITLE) ?: "该吃药啦"
-    val body = intent.getStringExtra(EXTRA_BODY) ?: "请进入吃哟咯确认已吃药"
-    val itemId = intent.getStringExtra(EXTRA_ITEM_ID) ?: ""
-    val dueAt = intent.getStringExtra(EXTRA_DUE_AT) ?: System.currentTimeMillis().toString()
-    val test = intent.getBooleanExtra(EXTRA_TEST, false)
+    activeTitle = intent.getStringExtra(EXTRA_TITLE) ?: "该吃药啦"
+    activeBody = intent.getStringExtra(EXTRA_BODY) ?: "请进入吃哟咯确认已吃药"
+    activeItemId = intent.getStringExtra(EXTRA_ITEM_ID) ?: ""
+    activeDueAt = intent.getStringExtra(EXTRA_DUE_AT) ?: System.currentTimeMillis().toString()
+    saveActiveAlarm()
+    activateAlarm()
+    AlarmPermissionModule.recordEvent(this, "alarm_service_started")
+    if (intent.getBooleanExtra(EXTRA_TEST, false)) handler.postDelayed({ stopCurrentAlarm() }, TEST_DURATION_MS)
+  }
+
+  private fun activateAlarm() {
+    val title = activeTitle ?: return
+    val body = activeBody ?: return
+    val itemId = activeItemId ?: ""
+    val dueAt = activeDueAt ?: System.currentTimeMillis().toString()
     val notification = alarmNotification(title, body, itemId, dueAt)
     startAsForeground(ALARM_NOTIFICATION_ID, notification)
     (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).notify(ALARM_NOTIFICATION_ID, notification)
     currentNotificationId = ALARM_NOTIFICATION_ID
-    startAlert()
-    AlarmPermissionModule.recordEvent(this, "alarm_service_started")
-    if (test) handler.postDelayed({ stopCurrentAlarm() }, 10_000L)
+    ringOnce()
+  }
+
+  private fun hasActiveAlarm(): Boolean = activeTitle != null
+
+  private fun saveActiveAlarm() {
+    AlarmPermissionModule.preferences(this).edit()
+      .putBoolean(KEY_ACTIVE_ALARM, true)
+      .putString(KEY_ACTIVE_TITLE, activeTitle)
+      .putString(KEY_ACTIVE_BODY, activeBody)
+      .putString(KEY_ACTIVE_ITEM_ID, activeItemId)
+      .putString(KEY_ACTIVE_DUE_AT, activeDueAt)
+      .apply()
+  }
+
+  private fun restoreActiveAlarm() {
+    val prefs = AlarmPermissionModule.preferences(this)
+    if (!prefs.getBoolean(KEY_ACTIVE_ALARM, false)) return
+    activeTitle = prefs.getString(KEY_ACTIVE_TITLE, null)
+    activeBody = prefs.getString(KEY_ACTIVE_BODY, null)
+    activeItemId = prefs.getString(KEY_ACTIVE_ITEM_ID, "")
+    activeDueAt = prefs.getString(KEY_ACTIVE_DUE_AT, "")
+    if (hasActiveAlarm()) activateAlarm()
   }
 
   private fun alarmNotification(title: String, body: String, itemId: String, dueAt: String): Notification {
@@ -121,8 +157,9 @@ class AlarmForegroundService : Service() {
       .build()
   }
 
-  private fun startAlert() {
-    stopAlert()
+  private fun ringOnce() {
+    handler.removeCallbacks(RING_NEXT_CALLBACK)
+    stopAlertBurst()
     val attributes = AudioAttributes.Builder()
       .setUsage(AudioAttributes.USAGE_ALARM)
       .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
@@ -158,6 +195,7 @@ class AlarmForegroundService : Service() {
         ringtone?.audioAttributes = attributes
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) ringtone?.isLooping = true
         ringtone?.play()
+        AlarmPermissionModule.recordEvent(this, "ringtone_fallback")
       }
     }
     vibrator = getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
@@ -169,9 +207,13 @@ class AlarmForegroundService : Service() {
       }
       AlarmPermissionModule.recordEvent(this, "vibration_started")
     }
+    handler.postDelayed({ stopAlertBurst() }, RING_BURST_MS)
+    handler.postDelayed(RING_NEXT_CALLBACK, RING_INTERVAL_MS)
   }
 
-  private fun stopAlert() {
+  private val RING_NEXT_CALLBACK = Runnable { if (hasActiveAlarm()) ringOnce() }
+
+  private fun stopAlertBurst() {
     try {
       mediaPlayer?.let { if (it.isPlaying) it.stop(); it.reset(); it.release() }
     } catch (_: Exception) { }
@@ -191,7 +233,18 @@ class AlarmForegroundService : Service() {
 
   private fun stopCurrentAlarm() {
     handler.removeCallbacksAndMessages(null)
-    stopAlert()
+    stopAlertBurst()
+    activeTitle = null
+    activeBody = null
+    activeItemId = null
+    activeDueAt = null
+    AlarmPermissionModule.preferences(this).edit()
+      .putBoolean(KEY_ACTIVE_ALARM, false)
+      .remove(KEY_ACTIVE_TITLE)
+      .remove(KEY_ACTIVE_BODY)
+      .remove(KEY_ACTIVE_ITEM_ID)
+      .remove(KEY_ACTIVE_DUE_AT)
+      .apply()
     currentNotificationId?.let { (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).cancel(it) }
     currentNotificationId = null
     AlarmPermissionModule.recordEvent(this, "alarm_stopped")
@@ -245,6 +298,14 @@ class AlarmForegroundService : Service() {
     private const val BACKGROUND_CHANNEL = "eat-yo-native-background-v1"
     private const val ALARM_NOTIFICATION_ID = 7021
     private const val BACKGROUND_NOTIFICATION_ID = 7022
+    private const val RING_BURST_MS = 10_000L
+    private const val RING_INTERVAL_MS = 60_000L
+    private const val TEST_DURATION_MS = 10_000L
+    private const val KEY_ACTIVE_ALARM = "active_alarm"
+    private const val KEY_ACTIVE_TITLE = "active_alarm_title"
+    private const val KEY_ACTIVE_BODY = "active_alarm_body"
+    private const val KEY_ACTIVE_ITEM_ID = "active_alarm_item_id"
+    private const val KEY_ACTIVE_DUE_AT = "active_alarm_due_at"
     private var running = false
 
     fun isRunning(): Boolean = running
@@ -276,11 +337,7 @@ class AlarmForegroundService : Service() {
     }
 
     fun stopActive(context: Context) {
-      if (running) {
-        context.startService(Intent(context, AlarmForegroundService::class.java).setAction(ACTION_STOP_ALARM))
-      } else {
-        context.stopService(Intent(context, AlarmForegroundService::class.java))
-      }
+      startCompat(context, Intent(context, AlarmForegroundService::class.java).setAction(ACTION_STOP_ALARM))
     }
 
     private fun startCompat(context: Context, intent: Intent) {
@@ -352,7 +409,6 @@ class MedicationAlarmActivity : Activity() {
       text = "打开吃哟咯"
       minHeight = 54
       setOnClickListener {
-        AlarmForegroundService.stopActive(this@MedicationAlarmActivity)
         startActivity(Intent(this@MedicationAlarmActivity, MainActivity::class.java).apply {
           action = "com.sindreyang.sindreeatyo.MEDICATION_ALARM"
           putExtra("alarmMode", true)
@@ -363,19 +419,10 @@ class MedicationAlarmActivity : Activity() {
         finish()
       }
     }
-    val stop = Button(this).apply {
-      text = "先关闭提醒"
-      minHeight = 54
-      setOnClickListener {
-        AlarmForegroundService.stopActive(this@MedicationAlarmActivity)
-        finish()
-      }
-    }
     root.addView(heading, LinearLayout.LayoutParams(-1, -2))
     root.addView(titleView, LinearLayout.LayoutParams(-1, -2))
     root.addView(bodyView, LinearLayout.LayoutParams(-1, -2))
     root.addView(open, LinearLayout.LayoutParams(-1, -2).apply { topMargin = 12 })
-    root.addView(stop, LinearLayout.LayoutParams(-1, -2).apply { topMargin = 8 })
     setContentView(root)
   }
 }

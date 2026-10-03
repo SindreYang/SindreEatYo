@@ -138,7 +138,6 @@ function nativeRecordsFor(items: YoItem[]): NativeAlarmRecord[] {
       }
       for (let index = 0; index < 30; index += 1) {
         addNativeRecord(records, item, due, `first-${index}`);
-        if (item.bellCount === 2) addNativeRecord(records, item, new Date(due.getTime() + Math.max(1, item.secondBellDelayMinutes) * 60 * 1000), `second-${index}`);
         due = new Date(due.getTime() + intervalMs);
       }
       continue;
@@ -156,7 +155,6 @@ function nativeRecordsFor(items: YoItem[]): NativeAlarmRecord[] {
           const due = new Date(cursor);
           due.setHours(hour, minute, 0, 0);
           addNativeRecord(records, item, due, 'first');
-          if (item.bellCount === 2) addNativeRecord(records, item, new Date(due.getTime() + Math.max(1, item.secondBellDelayMinutes) * 60 * 1000), 'second');
         }
       }
       cursor.setDate(cursor.getDate() + 1);
@@ -183,10 +181,6 @@ export async function rescheduleAll(items: YoItem[]): Promise<void> {
     if (item.mode === 'interval') {
       const seconds = Math.max(15 * 60, item.intervalHours * 60 * 60);
       await Notifications.scheduleNotificationAsync({ content: notificationContent(item), trigger: intervalTrigger(seconds) });
-      if (item.bellCount === 2) {
-        const delay = Math.max(1, item.secondBellDelayMinutes) * 60;
-        await Notifications.scheduleNotificationAsync({ content: notificationContent(item), trigger: intervalTrigger(seconds + delay) });
-      }
       continue;
     }
 
@@ -195,17 +189,10 @@ export async function rescheduleAll(items: YoItem[]): Promise<void> {
       const hour = Number(hourString);
       const minute = Number(minuteString);
       if (!Number.isFinite(hour) || !Number.isFinite(minute)) continue;
-      const total = hour * 60 + minute + Math.max(1, item.secondBellDelayMinutes);
-      const secondHour = Math.floor((total % 1440) / 60);
-      const secondMinute = total % 60;
       const weekdays = item.repeatRule === 'daily' ? [0] : item.weekdays;
       for (const weekday of weekdays) {
         const trigger = item.repeatRule === 'daily' ? dailyTrigger(hour, minute) : weeklyTrigger(weekday, hour, minute);
         await Notifications.scheduleNotificationAsync({ content: notificationContent(item), trigger });
-        if (item.bellCount === 2) {
-          const secondTrigger = item.repeatRule === 'daily' ? dailyTrigger(secondHour, secondMinute) : weeklyTrigger(weekday, secondHour, secondMinute);
-          await Notifications.scheduleNotificationAsync({ content: notificationContent(item), trigger: secondTrigger });
-        }
       }
     }
     }

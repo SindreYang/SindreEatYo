@@ -25,7 +25,7 @@ import { getNativeAlarmStatus, notificationContent, openBatteryOptimizationSetti
 import { addDebugLog, exportDebugLog } from './src/debugLog';
 
 type Tab = 'today' | 'items' | 'settings';
-type PickerKind = 'interval' | 'time' | 'delay' | null;
+type PickerKind = 'interval' | 'time' | null;
 
 const colors = {
   bg: '#FFF8F3',
@@ -45,7 +45,6 @@ const hourOptions = Array.from({ length: 24 }, (_, hour) => hour.toString().padS
 const minuteOptions = Array.from({ length: 60 }, (_, minute) => minute.toString().padStart(2, '0'));
 const WHEEL_ITEM_HEIGHT = 44;
 const intervalOptions = [1, 2, 3, 4, 6, 8, 12, 24].map((hours) => ({ value: String(hours), label: `每 ${hours} 小时` }));
-const delayOptions = [5, 10, 15, 30, 60].map((minutes) => ({ value: String(minutes), label: `间隔 ${minutes} 分钟` }));
 const APP_PACKAGE = 'com.sindreyang.sindreeatyo';
 
 type AlarmStatus = { exactAlarm: boolean; fullScreen: boolean; notifications: boolean; batteryOptimizationIgnored?: boolean; lastAlarmEvent?: string; lastAlarmAt?: string; backgroundServiceEnabled?: boolean; backgroundServiceRunning?: boolean };
@@ -203,17 +202,6 @@ function AppContent() {
     await updateData({ ...data, pendingDoses: data.pendingDoses.map((candidate) => candidate.id === dose.id ? { ...candidate, status: 'confirmed', confirmedAt: new Date().toISOString() } : candidate) });
   };
 
-  const snoozeDose = async (dose: PendingDose) => {
-    await stopAlarm();
-    const item = itemById(dose.itemId);
-    if (!item) return;
-    await updateData({ ...data, pendingDoses: data.pendingDoses.map((candidate) => candidate.id === dose.id ? { ...candidate, status: 'snoozed' } : candidate) });
-    await Notifications.scheduleNotificationAsync({
-      content: notificationContent(item),
-      trigger: { type: Notifications.SchedulableTriggerInputTypes.TIME_INTERVAL, seconds: 10 * 60, repeats: false } as Notifications.NotificationTriggerInput,
-    });
-  };
-
   const saveItem = async (draft: YoItem) => {
     const isFirstItem = data.items.length === 0;
     const normalized = { ...draft, sound: draft.sound ?? 'default' as const };
@@ -255,7 +243,7 @@ function AppContent() {
         <View style={styles.headerBadge}><Text style={styles.headerBadgeText}>药</Text></View>
       </View>
       <View style={styles.content}>
-        {tab === 'today' && <TodayScreen pending={pending} hasItems={data.items.length > 0} itemById={itemById} onConfirm={confirmDose} onSnooze={snoozeDose} onAdd={() => setEditing(emptyItem())} />}
+        {tab === 'today' && <TodayScreen pending={pending} hasItems={data.items.length > 0} itemById={itemById} onConfirm={confirmDose} onAdd={() => setEditing(emptyItem())} />}
         {tab === 'items' && <ItemsScreen items={data.items} onEdit={setEditing} onDelete={deleteItem} onAdd={() => setEditing(emptyItem())} />}
         {tab === 'settings' && <SettingsScreen notificationGranted={notificationGranted} alarmStatus={alarmStatus} onRequest={async () => { setNotificationGranted(await prepareNotifications()); await refreshAlarmStatus(); }} onOpenAlarm={() => void openAlarmPermissionSettings(alarmStatus)} onOpenBackground={() => void openBatteryOptimizationSettings().then(() => refreshAlarmStatus())} onToggleBackground={(enabled) => void setBackgroundServiceEnabled(enabled).then(() => refreshAlarmStatus()).catch(() => Alert.alert('后台提醒未开启', '请允许吃哟咯显示通知并允许后台运行。'))} onTest={() => void testAlarm().then(() => addDebugLog('test_alarm_requested')).catch(() => Alert.alert('测试失败', '请先检查通知权限，并导出调试日志。'))} onExport={() => void exportDebugLog()} />}
       </View>
@@ -269,7 +257,7 @@ function AppContent() {
   );
 }
 
-function TodayScreen({ pending, hasItems, itemById, onConfirm, onSnooze, onAdd }: { pending: PendingDose[]; hasItems: boolean; itemById: (id: string) => YoItem | undefined; onConfirm: (dose: PendingDose) => void; onSnooze: (dose: PendingDose) => void; onAdd: () => void }) {
+function TodayScreen({ pending, hasItems, itemById, onConfirm, onAdd }: { pending: PendingDose[]; hasItems: boolean; itemById: (id: string) => YoItem | undefined; onConfirm: (dose: PendingDose) => void; onAdd: () => void }) {
   return <ScrollView contentContainerStyle={styles.scroll}>
     <View style={styles.dateRow}><View><Text style={styles.greeting}>今天也要按时吃药</Text><Text style={styles.date}>{new Date().toLocaleDateString('zh-CN', { month: 'long', day: 'numeric', weekday: 'long' })}</Text></View><Text style={styles.sun}>✦</Text></View>
     <View style={styles.summary}><View style={styles.summaryIcon}><Text>💊</Text></View><Text style={styles.summaryNumber}>{pending.length}</Text><View><Text style={styles.summaryTitle}>项待确认</Text><Text style={styles.summarySub}>{pending.length ? '确认后才算完成哦' : '今天目前都完成啦'}</Text></View></View>
@@ -277,7 +265,7 @@ function TodayScreen({ pending, hasItems, itemById, onConfirm, onSnooze, onAdd }
     {pending.length === 0 ? <TodayEmptyState hasItems={hasItems} onAdd={onAdd} /> : pending.map((dose) => {
       const item = itemById(dose.itemId);
       if (!item) return null;
-      return <View style={styles.doseCard} key={dose.id}><View style={styles.doseIcon}><Text>💊</Text></View><View style={styles.doseInfo}><Text style={styles.doseName}>{item.name}</Text><Text style={styles.doseNote}>{item.note || '没有备注'}</Text><Text style={styles.doseTime}>{formatTime(new Date(dose.dueAt))} · 等待确认</Text></View><View style={styles.doseActions}><Pressable style={styles.confirmButton} onPress={() => onConfirm(dose)}><Text style={styles.confirmText}>确认已吃药</Text></Pressable><Pressable onPress={() => onSnooze(dose)}><Text style={styles.snooze}>稍后 10 分钟</Text></Pressable></View></View>;
+      return <View style={styles.doseCard} key={dose.id}><View style={styles.doseIcon}><Text>💊</Text></View><View style={styles.doseInfo}><Text style={styles.doseName}>{item.name}</Text><Text style={styles.doseNote}>{item.note || '没有备注'}</Text><Text style={styles.doseTime}>{formatTime(new Date(dose.dueAt))} · 等待确认</Text></View><View style={styles.doseActions}><Pressable style={styles.confirmButton} onPress={() => onConfirm(dose)}><Text style={styles.confirmText}>确认已吃药</Text></Pressable></View></View>;
     })}
     <View style={styles.tip}><Text style={styles.tipIcon}>ⓘ</Text><Text style={styles.tipText}>提醒可以被系统暂时划掉，但未确认状态会一直保留在这里。</Text></View>
   </ScrollView>;
@@ -297,7 +285,7 @@ function TodayEmptyState({ hasItems, onAdd }: { hasItems: boolean; onAdd: () => 
 function ItemsScreen({ items, onEdit, onDelete, onAdd }: { items: YoItem[]; onEdit: (item: YoItem) => void; onDelete: (item: YoItem) => void; onAdd: () => void }) {
   return <View style={styles.screen}>
     <View style={styles.toolbar}><Text style={styles.sectionTitle}>我的药品</Text><Pressable style={styles.addMedicineButton} onPress={onAdd}><Text style={styles.addMedicineText}>＋ 添加药品</Text></Pressable></View>
-    <FlatList data={items} keyExtractor={(item) => item.id} contentContainerStyle={styles.list} ListEmptyComponent={<EmptyState onAdd={onAdd} />} renderItem={({ item }) => <View style={styles.itemCard}><View style={[styles.itemIcon, !item.enabled && { backgroundColor: '#EEE' }]}><Text>💊</Text></View><Pressable style={styles.itemMain} onPress={() => onEdit(item)}><Text style={styles.itemName}>{item.name}</Text><Text style={styles.itemNote}>{item.note || '点击修改备注'}</Text><Text style={styles.itemRule}>{item.mode === 'interval' ? `每 ${item.intervalHours} 小时` : item.fixedTimes.join('、')}</Text></Pressable><View style={styles.itemRight}><Text style={styles.bell}>{item.bellCount === 2 ? '🔔🔔' : '🔔'}</Text><View style={styles.itemActions}><Pressable style={styles.itemActionButton} onPress={() => onEdit(item)}><Text style={styles.editText}>修改</Text></Pressable><Pressable style={styles.itemActionButton} onPress={() => onDelete(item)}><Text style={styles.delete}>删除</Text></Pressable></View></View></View>} />
+    <FlatList data={items} keyExtractor={(item) => item.id} contentContainerStyle={styles.list} ListEmptyComponent={<EmptyState onAdd={onAdd} />} renderItem={({ item }) => <View style={styles.itemCard}><View style={[styles.itemIcon, !item.enabled && { backgroundColor: '#EEE' }]}><Text>💊</Text></View><Pressable style={styles.itemMain} onPress={() => onEdit(item)}><Text style={styles.itemName}>{item.name}</Text><Text style={styles.itemNote}>{item.note || '点击修改备注'}</Text><Text style={styles.itemRule}>{item.mode === 'interval' ? `每 ${item.intervalHours} 小时` : item.fixedTimes.join('、')}</Text></Pressable><View style={styles.itemRight}><Text style={styles.bell}>🔔</Text><View style={styles.itemActions}><Pressable style={styles.itemActionButton} onPress={() => onEdit(item)}><Text style={styles.editText}>修改</Text></Pressable><Pressable style={styles.itemActionButton} onPress={() => onDelete(item)}><Text style={styles.delete}>删除</Text></Pressable></View></View></View>} />
   </View>;
 }
 
@@ -337,33 +325,34 @@ function TimeWheelPicker({ visible, value, onSelect, onClose }: { visible: boole
     setValue(values[index]);
   };
   const renderWheel = (values: string[], selected: string, setValue: (value: string) => void, key: string) => (
-    <FlatList
+    <ScrollView
       key={`${visible}-${key}-${initialHour}-${initialMinute}`}
-      data={values}
       style={styles.wheelList}
       contentContainerStyle={styles.wheelContent}
       showsVerticalScrollIndicator={false}
       snapToInterval={WHEEL_ITEM_HEIGHT}
       decelerationRate="fast"
-      initialScrollIndex={Math.max(0, values.indexOf(selected))}
-      getItemLayout={(_, index) => ({ length: WHEEL_ITEM_HEIGHT, offset: WHEEL_ITEM_HEIGHT * index, index })}
-      keyExtractor={(entry) => `${key}-${entry}`}
+      nestedScrollEnabled
+      scrollEnabled
+      contentOffset={{ x: 0, y: Math.max(0, values.indexOf(selected)) * WHEEL_ITEM_HEIGHT }}
       onMomentumScrollEnd={onWheelEnd(values, setValue)}
       onScrollEndDrag={onWheelEnd(values, setValue)}
-      renderItem={({ item: entry }) => <View style={[styles.wheelItem, entry === selected && styles.wheelItemOn]}><Text style={[styles.wheelItemText, entry === selected && styles.wheelItemTextOn]}>{entry}</Text></View>}
-    />
+    >
+      {values.map((entry) => <View style={[styles.wheelItem, entry === selected && styles.wheelItemOn]} key={`${key}-${entry}`}><Text style={[styles.wheelItemText, entry === selected && styles.wheelItemTextOn]}>{entry}</Text></View>)}
+    </ScrollView>
   );
 
   return <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
-    <Pressable style={styles.pickerBackdrop} onPress={onClose}>
-      <Pressable style={styles.pickerSheet} onPress={(event) => event.stopPropagation()}>
+    <View style={styles.pickerBackdrop}>
+      <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />
+      <View style={styles.pickerSheet}>
         <View style={styles.pickerHeader}><Text style={styles.pickerTitle}>选择吃药时间</Text><Pressable hitSlop={8} onPress={finish}><Text style={styles.link}>完成</Text></Pressable></View>
         <View style={styles.wheelRow}>
           <View style={styles.wheelColumn}>{renderWheel(hourOptions, hour, setHour, 'hour')}<Text style={styles.wheelUnit}>时</Text></View>
           <View style={styles.wheelColumn}>{renderWheel(minuteOptions, minute, setMinute, 'minute')}<Text style={styles.wheelUnit}>分</Text></View>
         </View>
-      </Pressable>
-    </Pressable>
+      </View>
+    </View>
   </Modal>;
 }
 
@@ -394,14 +383,11 @@ function ItemEditor({ item, onClose, onSave }: { item: YoItem | null; onClose: (
         {draft.mode === 'interval' ? <View style={styles.controlBlock}><SelectField label="多久提醒一次" value={`每 ${draft.intervalHours} 小时`} onPress={() => setPicker('interval')} /></View> : <View style={styles.controlBlock}><Text style={styles.helper}>每天提醒时间</Text>{draft.fixedTimes.map((time, index) => <View style={styles.timeRow} key={`${index}-${time}`}><View style={styles.timeFieldWrap}><SelectField value={time} onPress={() => { setEditingTimeIndex(index); setPicker('time'); }} /></View><Pressable hitSlop={8} onPress={() => set('fixedTimes', draft.fixedTimes.filter((_, i) => i !== index))}><Text style={styles.delete}>移除</Text></Pressable></View>)}<Pressable style={styles.addTimeButton} onPress={() => set('fixedTimes', [...draft.fixedTimes, '20:00'])}><Text style={styles.link}>＋ 添加一个时间</Text></Pressable></View>}
         <Text style={styles.label}>重复</Text><View style={styles.segment}><Segment label="每天" active={draft.repeatRule === 'daily'} onPress={() => set('repeatRule', 'daily')} /><Segment label="每周" active={draft.repeatRule === 'weekly'} onPress={() => { set('repeatRule', 'weekly'); set('weekdays', [2]); }} /><Segment label="自定义" active={draft.repeatRule === 'custom'} onPress={() => { set('repeatRule', 'custom'); set('weekdays', [1, 2, 3, 4, 5, 6, 7]); }} /></View>
         {draft.repeatRule !== 'daily' && <View style={styles.controlBlock}><Text style={styles.helper}>选择提醒日</Text><View style={styles.weekdays}>{days.map(([label, day]) => { const selected = draft.weekdays.includes(day); return <Pressable key={day} onPress={() => { const next = draft.repeatRule === 'weekly' ? [day] : selected ? draft.weekdays.filter((value) => value !== day) : [...draft.weekdays, day]; set('weekdays', next); }} style={[styles.weekday, selected && styles.weekdayOn]}><Text style={[styles.weekdayText, selected && styles.weekdayTextOn]}>{label}</Text></Pressable>; })}</View></View>}
-        <Text style={styles.label}>响铃次数</Text><View style={styles.segment}><Segment label="1 次" active={draft.bellCount === 1} onPress={() => set('bellCount', 1)} /><Segment label="2 次" active={draft.bellCount === 2} onPress={() => set('bellCount', 2)} /></View>
-        {draft.bellCount === 2 && <View style={styles.controlBlock}><SelectField label="第二次提醒间隔" value={`间隔 ${draft.secondBellDelayMinutes} 分钟`} onPress={() => setPicker('delay')} /></View>}
-        <View style={styles.switchRow}><View style={styles.switchCopy}><Text style={styles.label}>启用提醒</Text><Text style={styles.helper}>关闭后不会安排新的提醒</Text></View><Switch value={draft.enabled} onValueChange={(value) => { if (value) { set('enabled', true); return; } Alert.alert('关闭提醒？', '关闭后这个药品不会再响铃和振动。', [{ text: '继续开启', style: 'cancel' }, { text: '确认关闭', style: 'destructive', onPress: () => set('enabled', false) }]); }} trackColor={{ true: colors.teal }} thumbColor="#FFF" /></View>
+        <View style={styles.switchRow}><View style={styles.switchCopy}><Text style={styles.label}>启用提醒</Text><Text style={styles.helper}>未确认时每分钟提醒一次，确认后停止</Text></View><Switch value={draft.enabled} onValueChange={(value) => { if (value) { set('enabled', true); return; } Alert.alert('关闭提醒？', '关闭后这个药品不会再响铃和振动。', [{ text: '继续开启', style: 'cancel' }, { text: '确认关闭', style: 'destructive', onPress: () => set('enabled', false) }]); }} trackColor={{ true: colors.teal }} thumbColor="#FFF" /></View>
       </ScrollView>
       <View style={styles.modalFooter}><Pressable style={styles.saveButton} onPress={save}><Text style={styles.saveButtonText}>保存提醒</Text></Pressable></View>
       <OptionPicker visible={picker === 'interval'} title="选择提醒间隔" options={intervalOptions} value={String(draft.intervalHours)} onSelect={(value) => set('intervalHours', Number(value))} onClose={() => setPicker(null)} />
       <TimeWheelPicker visible={picker === 'time'} value={selectedTime} onSelect={(value) => set('fixedTimes', draft.fixedTimes.map((time, index) => index === editingTimeIndex ? value : time))} onClose={() => setPicker(null)} />
-      <OptionPicker visible={picker === 'delay'} title="选择第二次提醒间隔" options={delayOptions} value={String(draft.secondBellDelayMinutes)} onSelect={(value) => set('secondBellDelayMinutes', Number(value))} onClose={() => setPicker(null)} />
     </KeyboardAvoidingView>
     </SafeAreaView>
   </Modal>;
