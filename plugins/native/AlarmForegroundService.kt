@@ -236,7 +236,6 @@ class AlarmForegroundService : Service() {
       }
     } else {
       AlarmPermissionModule.recordEvent(this, "ringtone_unavailable")
-      }
     }
     vibrator = getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
     if (vibrator?.hasVibrator() == true) {
