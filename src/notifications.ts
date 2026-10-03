@@ -13,14 +13,20 @@ type NativeAlarmRecord = {
   sound: ReminderSound;
   itemId: string;
   dueAt: string;
+  mode: YoItem['mode'];
+  intervalHours: number;
+  fixedTimes: string;
+  repeatRule: YoItem['repeatRule'];
+  weekdays: string;
+  createdAt: string;
 };
 
 type NativeAlarmModule = {
   scheduleAlarms?: (recordsJson: string) => Promise<void>;
   cancelAllAlarms?: () => Promise<void>;
-  getStatus?: () => Promise<{ exactAlarm: boolean; fullScreen: boolean; notifications: boolean; batteryOptimizationIgnored?: boolean; lastAlarmEvent?: string; lastAlarmAt?: string; backgroundServiceEnabled?: boolean; backgroundServiceRunning?: boolean }>;
+  getStatus?: () => Promise<{ exactAlarm: boolean; fullScreen: boolean; notifications: boolean; batteryOptimizationIgnored?: boolean; lastAlarmEvent?: string; lastAlarmAt?: string; recentAlarmEvents?: string; backgroundServiceEnabled?: boolean; backgroundServiceRunning?: boolean }>;
   testAlarm?: () => Promise<void>;
-  stopAlarm?: () => Promise<void>;
+  stopAlarm?: (itemId?: string, dueAt?: string) => Promise<void>;
   startBackgroundService?: () => Promise<void>;
   stopBackgroundService?: () => Promise<void>;
   openBatteryOptimizationSettings?: () => Promise<void>;
@@ -120,6 +126,12 @@ function addNativeRecord(records: NativeAlarmRecord[], item: YoItem, dueAt: Date
     sound: 'default',
     itemId: item.id,
     dueAt: dueAt.toISOString(),
+    mode: item.mode,
+    intervalHours: item.intervalHours,
+    fixedTimes: item.fixedTimes.join(','),
+    repeatRule: item.repeatRule,
+    weekdays: item.weekdays.join(','),
+    createdAt: item.createdAt,
   });
 }
 
@@ -239,8 +251,8 @@ export async function testAlarm() {
   }
 }
 
-export async function stopAlarm() {
-  if (Platform.OS === 'android' && nativeAlarm?.stopAlarm) await nativeAlarm.stopAlarm();
+export async function stopAlarm(itemId?: string, dueAt?: string) {
+  if (Platform.OS === 'android' && nativeAlarm?.stopAlarm) await nativeAlarm.stopAlarm(itemId, dueAt);
 }
 
 export async function setBackgroundServiceEnabled(enabled: boolean) {

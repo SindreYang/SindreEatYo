@@ -29,6 +29,12 @@ import com.facebook.react.bridge.ReactContextBaseJavaModule
 import com.facebook.react.bridge.ReactMethod
 import com.facebook.react.uimanager.ViewManager
 import org.json.JSONArray
+import org.json.JSONObject
+import java.text.SimpleDateFormat
+import java.util.Calendar
+import java.util.Date
+import java.util.Locale
+import java.util.TimeZone
 
 class AlarmPermissionPackage : ReactPackage {
   override fun createNativeModules(reactContext: ReactApplicationContext): List<NativeModule> = listOf(AlarmPermissionModule(reactContext))
@@ -52,6 +58,7 @@ class AlarmPermissionModule(private val reactContext: ReactApplicationContext) :
       val prefs = preferences(reactContext)
       result.putString("lastAlarmEvent", prefs.getString(KEY_LAST_EVENT, "") ?: "")
       result.putString("lastAlarmAt", prefs.getString(KEY_LAST_EVENT_AT, "") ?: "")
+      result.putString("recentAlarmEvents", prefs.getString(KEY_EVENT_HISTORY, "[]") ?: "[]")
       result.putBoolean("backgroundServiceEnabled", prefs.getBoolean(KEY_BACKGROUND_SERVICE, true))
       result.putBoolean("backgroundServiceRunning", AlarmForegroundService.isRunning())
       promise.resolve(result)
@@ -126,9 +133,9 @@ class AlarmPermissionModule(private val reactContext: ReactApplicationContext) :
   }
 
   @ReactMethod
-  fun stopAlarm(promise: Promise) {
+  fun stopAlarm(itemId: String?, dueAt: String?, promise: Promise) {
     try {
-      AlarmForegroundService.stopActive(reactContext)
+      AlarmForegroundService.stopActive(reactContext, itemId, dueAt)
       promise.resolve(null)
     } catch (error: Exception) {
       promise.reject("STOP_FAILED", error)
@@ -173,9 +180,15 @@ class AlarmPermissionModule(private val reactContext: ReactApplicationContext) :
     const val KEY_LAST_EVENT = "last_alarm_event"
     const val KEY_LAST_EVENT_AT = "last_alarm_at"
     const val KEY_BACKGROUND_SERVICE = "background_service_enabled"
+    const val KEY_EVENT_HISTORY = "alarm_event_history"
     fun preferences(context: Context): SharedPreferences = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
     fun recordEvent(context: Context, event: String) {
-      preferences(context).edit().putString(KEY_LAST_EVENT, event).putString(KEY_LAST_EVENT_AT, System.currentTimeMillis().toString()).apply()
+      val prefs = preferences(context)
+      val now = System.currentTimeMillis()
+      val history = try { JSONArray(prefs.getString(KEY_EVENT_HISTORY, "[]") ?: "[]") } catch (_: Exception) { JSONArray() }
+      history.put(JSONObject().put("at", now).put("event", event))
+      while (history.length() > 80) history.remove(0)
+      prefs.edit().putString(KEY_LAST_EVENT, event).putString(KEY_LAST_EVENT_AT, now.toString()).putString(KEY_EVENT_HISTORY, history.toString()).apply()
       Log.i("EatYoAlarm", event)
     }
   }
@@ -187,54 +200,152 @@ object AlarmScheduler {
   fun scheduleRecords(context: Context, records: JSONArray) {
     cancelAll(context)
     AlarmPermissionModule.recordEvent(context, "schedule_started")
-    val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+    val stored = JSONArray()
     var scheduledCount = 0
     for (index in 0 until records.length()) {
       val record = records.getJSONObject(index)
-      val at = record.optLong("at", 0L)
-      if (at <= System.currentTimeMillis()) continue
-      val requestCode = requestCode(record.optString("id", index.toString()))
-      val broadcastIntent = Intent(context, MedicationAlarmReceiver::class.java).apply {
-        action = ACTION_ALARM
-        putExtra("title", record.optString("title", "该吃药啦"))
-        putExtra("body", record.optString("body", "请进入吃哟咯确认已吃药"))
-        putExtra("sound", record.optString("sound", "default"))
-        putExtra("itemId", record.optString("itemId", ""))
-        putExtra("dueAt", record.optString("dueAt", ""))
-      }
-      val flags = PendingIntent.FLAG_UPDATE_CURRENT or immutableFlag()
-      val operation = PendingIntent.getBroadcast(context, requestCode, broadcastIntent, flags)
-      val showIntent = Intent(context, MainActivity::class.java).apply {
-        action = ACTION_ALARM
-        putExtra("alarmMode", true)
-        putExtra("itemId", record.optString("itemId", ""))
-        putExtra("dueAt", record.optString("dueAt", ""))
-        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
-      }
-      val showPendingIntent = PendingIntent.getActivity(context, requestCode + 1000000, showIntent, flags)
-      val alarmInfo = AlarmManager.AlarmClockInfo(at, showPendingIntent)
-      try {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && !alarmManager.canScheduleExactAlarms()) alarmManager.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, operation)
-        else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) alarmManager.setAlarmClock(alarmInfo, operation)
-        else alarmManager.setExact(AlarmManager.RTC_WAKEUP, at, operation)
-        scheduledCount += 1
-      } catch (_: SecurityException) {
-        alarmManager.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, operation)
+      if (scheduleRecord(context, record)) {
+        stored.put(record)
         scheduledCount += 1
       }
     }
+    AlarmPermissionModule.preferences(context).edit().putString(AlarmPermissionModule.KEY_RECORDS, stored.toString()).apply()
     AlarmPermissionModule.recordEvent(context, "schedule_count_$scheduledCount")
-    if (records.length() > 0 && AlarmPermissionModule.preferences(context).getBoolean(AlarmPermissionModule.KEY_BACKGROUND_SERVICE, true)) {
+    if (scheduledCount > 0 && AlarmPermissionModule.preferences(context).getBoolean(AlarmPermissionModule.KEY_BACKGROUND_SERVICE, true)) {
       AlarmForegroundService.startBackground(context)
-    } else if (records.length() == 0) {
+    } else if (scheduledCount == 0) {
       AlarmForegroundService.stopRuntime(context)
+    }
+  }
+
+  private fun scheduleRecord(context: Context, record: JSONObject): Boolean {
+    val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+    val at = record.optLong("at", 0L)
+    if (at <= System.currentTimeMillis()) return false
+    val requestCode = requestCode(record.optString("id", at.toString()))
+    val broadcastIntent = Intent(context, MedicationAlarmReceiver::class.java).apply {
+      action = ACTION_ALARM
+      putExtra("recordJson", record.toString())
+      putExtra("title", record.optString("title", "该吃药啦"))
+      putExtra("body", record.optString("body", "请进入吃哟咯确认已吃药"))
+      putExtra("sound", record.optString("sound", "default"))
+      putExtra("itemId", record.optString("itemId", ""))
+      putExtra("dueAt", record.optString("dueAt", ""))
+    }
+    val flags = PendingIntent.FLAG_UPDATE_CURRENT or immutableFlag()
+    val operation = PendingIntent.getBroadcast(context, requestCode, broadcastIntent, flags)
+    val showIntent = Intent(context, MedicationAlarmActivity::class.java).apply {
+      action = ACTION_ALARM
+      putExtra("alarmMode", true)
+      putExtra("itemId", record.optString("itemId", ""))
+      putExtra("dueAt", record.optString("dueAt", ""))
+      putExtra("title", record.optString("title", "该吃药啦"))
+      putExtra("body", record.optString("body", "请进入吃哟咯确认已吃药"))
+      addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+    }
+    val showPendingIntent = PendingIntent.getActivity(context, requestCode + 1000000, showIntent, flags)
+    val alarmInfo = AlarmManager.AlarmClockInfo(at, showPendingIntent)
+    try {
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && !alarmManager.canScheduleExactAlarms()) alarmManager.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, operation)
+      else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) alarmManager.setAlarmClock(alarmInfo, operation)
+      else alarmManager.setExact(AlarmManager.RTC_WAKEUP, at, operation)
+    } catch (_: SecurityException) {
+      alarmManager.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, operation)
+    }
+    return true
+  }
+
+  fun scheduleFollowing(context: Context, rawRecord: String) {
+    try {
+      val current = JSONObject(rawRecord)
+      val next = nextRecord(current) ?: return
+      val prefs = AlarmPermissionModule.preferences(context)
+      val old = try { JSONArray(prefs.getString(AlarmPermissionModule.KEY_RECORDS, "[]") ?: "[]") } catch (_: Exception) { JSONArray() }
+      val kept = JSONArray()
+      val now = System.currentTimeMillis()
+      for (index in 0 until old.length()) {
+        val record = old.getJSONObject(index)
+        if (record.optLong("at", 0L) > now) kept.put(record)
+      }
+      var duplicate = false
+      for (index in 0 until kept.length()) {
+        val record = kept.getJSONObject(index)
+        if (record.optString("itemId") == next.optString("itemId") && record.optLong("at") == next.optLong("at")) duplicate = true
+      }
+      if (!duplicate) kept.put(next)
+      prefs.edit().putString(AlarmPermissionModule.KEY_RECORDS, kept.toString()).apply()
+      if (!duplicate) scheduleRecord(context, next)
+      AlarmPermissionModule.recordEvent(context, "schedule_following")
+    } catch (error: Exception) {
+      AlarmPermissionModule.recordEvent(context, "schedule_following_failed_${error.javaClass.simpleName}")
     }
   }
 
   fun restore(context: Context) {
     val raw = AlarmPermissionModule.preferences(context).getString(AlarmPermissionModule.KEY_RECORDS, null) ?: return
-    try { scheduleRecords(context, JSONArray(raw)) } catch (_: Exception) { }
+    try {
+      val records = JSONArray(raw)
+      val now = System.currentTimeMillis()
+      val restored = JSONArray()
+      val latestByItem = mutableMapOf<String, JSONObject>()
+      for (index in 0 until records.length()) {
+        val record = records.getJSONObject(index)
+        if (record.optLong("at", 0L) > now) restored.put(record)
+        val itemId = record.optString("itemId", "")
+        if (itemId.isNotBlank() && (!latestByItem.containsKey(itemId) || latestByItem[itemId]!!.optLong("at") < record.optLong("at"))) latestByItem[itemId] = record
+      }
+      latestByItem.values.forEach { record ->
+        if (record.optLong("at", 0L) <= now) nextRecord(record)?.let { restored.put(it) }
+      }
+      scheduleRecords(context, restored)
+    } catch (_: Exception) { }
   }
+
+  private fun nextRecord(record: JSONObject): JSONObject? {
+    val itemId = record.optString("itemId", "")
+    if (itemId.isBlank()) return null
+    val previous = record.optLong("at", System.currentTimeMillis())
+    val mode = record.optString("mode", "fixed")
+    val nextAt = if (mode == "interval") {
+      val intervalHours = record.optDouble("intervalHours", 4.0).coerceAtLeast(0.25)
+      var candidate = previous + (intervalHours * 60 * 60 * 1000).toLong()
+      val step = (intervalHours * 60 * 60 * 1000).toLong()
+      while (candidate <= System.currentTimeMillis()) candidate += step
+      candidate
+    } else nextFixedAt(record, previous) ?: return null
+    return JSONObject(record.toString()).apply {
+      put("id", "$itemId-$nextAt-following")
+      put("at", nextAt)
+      put("dueAt", iso(nextAt))
+    }
+  }
+
+  private fun nextFixedAt(record: JSONObject, previous: Long): Long? {
+    val times = record.optString("fixedTimes", "08:00").split(',').mapNotNull { value ->
+      val parts = value.trim().split(':')
+      if (parts.size != 2) null else {
+        val hour = parts[0].toIntOrNull()
+        val minute = parts[1].toIntOrNull()
+        if (hour == null || minute == null) null else hour * 60 + minute
+      }
+    }.filter { it in 0..1439 }
+    if (times.isEmpty()) return null
+    val rule = record.optString("repeatRule", "daily")
+    val weekdays = record.optString("weekdays", "1,2,3,4,5,6,7").split(',').mapNotNull { it.trim().toIntOrNull() }.toSet()
+    val base = Calendar.getInstance().apply { timeInMillis = previous; add(Calendar.MINUTE, 1); set(Calendar.SECOND, 0); set(Calendar.MILLISECOND, 0) }
+    for (dayOffset in 0..370) {
+      val day = (base.clone() as Calendar).apply { add(Calendar.DAY_OF_YEAR, dayOffset) }
+      val weekday = day.get(Calendar.DAY_OF_WEEK)
+      if (rule != "daily" && !weekdays.contains(weekday)) continue
+      for (minutes in times.sorted()) {
+        val candidate = (day.clone() as Calendar).apply { set(Calendar.HOUR_OF_DAY, minutes / 60); set(Calendar.MINUTE, minutes % 60); set(Calendar.SECOND, 0); set(Calendar.MILLISECOND, 0) }
+        if (candidate.timeInMillis > previous) return candidate.timeInMillis
+      }
+    }
+    return null
+  }
+
+  private fun iso(at: Long): String = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US).apply { timeZone = TimeZone.getTimeZone("UTC") }.format(Date(at))
 
   fun cancelAll(context: Context) {
     val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
@@ -258,6 +369,7 @@ object AlarmScheduler {
 class MedicationAlarmReceiver : BroadcastReceiver() {
   override fun onReceive(context: Context, intent: Intent) {
     AlarmPermissionModule.recordEvent(context, "alarm_received")
+    intent.getStringExtra("recordJson")?.let { AlarmScheduler.scheduleFollowing(context, it) }
     AlarmForegroundService.startAlarm(
       context,
       intent.getStringExtra("title") ?: "该吃药啦",

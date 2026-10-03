@@ -47,7 +47,7 @@ const WHEEL_ITEM_HEIGHT = 44;
 const intervalOptions = [1, 2, 3, 4, 6, 8, 12, 24].map((hours) => ({ value: String(hours), label: `每 ${hours} 小时` }));
 const APP_PACKAGE = 'com.sindreyang.sindreeatyo';
 
-type AlarmStatus = { exactAlarm: boolean; fullScreen: boolean; notifications: boolean; batteryOptimizationIgnored?: boolean; lastAlarmEvent?: string; lastAlarmAt?: string; backgroundServiceEnabled?: boolean; backgroundServiceRunning?: boolean };
+type AlarmStatus = { exactAlarm: boolean; fullScreen: boolean; notifications: boolean; batteryOptimizationIgnored?: boolean; lastAlarmEvent?: string; lastAlarmAt?: string; recentAlarmEvents?: string; backgroundServiceEnabled?: boolean; backgroundServiceRunning?: boolean };
 
 async function openAlarmPermissionSettings(status: AlarmStatus | null) {
   if (Platform.OS !== 'android') return;
@@ -198,8 +198,12 @@ function AppContent() {
   const itemById = (id: string) => data.items.find((item) => item.id === id);
 
   const confirmDose = async (dose: PendingDose) => {
-    await stopAlarm();
     await updateData({ ...data, pendingDoses: data.pendingDoses.map((candidate) => candidate.id === dose.id ? { ...candidate, status: 'confirmed', confirmedAt: new Date().toISOString() } : candidate) });
+    try {
+      await stopAlarm(dose.itemId, dose.dueAt);
+    } catch (error) {
+      await addDebugLog('alarm_stop_failed', { error: error instanceof Error ? error.message : String(error) }, 'error');
+    }
   };
 
   const saveItem = async (draft: YoItem) => {
@@ -221,7 +225,7 @@ function AppContent() {
   const deleteItem = (item: YoItem) => {
     Alert.alert('删除药品', `确定删除“${item.name}”吗？`, [
       { text: '取消', style: 'cancel' },
-      { text: '删除', style: 'destructive', onPress: () => void updateData({ ...data, items: data.items.filter((candidate) => candidate.id !== item.id) }) },
+      { text: '删除', style: 'destructive', onPress: () => void updateData({ ...data, items: data.items.filter((candidate) => candidate.id !== item.id), pendingDoses: data.pendingDoses.filter((dose) => dose.itemId !== item.id) }) },
     ]);
   };
 
@@ -291,8 +295,8 @@ function ItemsScreen({ items, onEdit, onDelete, onAdd }: { items: YoItem[]; onEd
 
 function SettingsScreen({ notificationGranted, alarmStatus, onRequest, onOpenAlarm, onOpenBackground, onToggleBackground, onTest, onExport }: { notificationGranted: boolean; alarmStatus: AlarmStatus | null; onRequest: () => void; onOpenAlarm: () => void; onOpenBackground: () => void; onToggleBackground: (enabled: boolean) => void; onTest: () => void; onExport: () => void }) {
   const alarmReady = Boolean(alarmStatus?.exactAlarm && alarmStatus?.fullScreen);
-  const backgroundReady = alarmStatus?.batteryOptimizationIgnored !== false;
-  const backgroundEnabled = alarmStatus?.backgroundServiceEnabled !== false;
+  const backgroundReady = alarmStatus?.batteryOptimizationIgnored === true;
+  const backgroundEnabled = alarmStatus?.backgroundServiceEnabled === true;
   return <ScrollView contentContainerStyle={styles.scroll}><Text style={styles.sectionTitle}>设置</Text><View style={styles.settingCard}><Text style={styles.settingTitle}>提醒权限</Text><Text style={styles.settingSub}>{notificationGranted ? '通知已允许' : '还没有允许通知，提醒可能不会响'}</Text><View style={styles.statusRow}><Text style={styles.statusDot}>{notificationGranted ? '●' : '○'}</Text><Text style={styles.statusText}>{notificationGranted ? '通知提醒已开启' : '需要开启通知提醒'}</Text></View><Pressable style={styles.secondaryButton} onPress={onRequest}><Text style={styles.secondaryText}>{notificationGranted ? '检查通知设置' : '开启通知权限'}</Text></Pressable><View style={styles.permissionDivider} /><Text style={styles.settingTitle}>闹钟级提醒</Text><Text style={styles.settingSub}>{alarmReady ? '已开启，锁屏和息屏时也可以响铃、振动' : '还需要开启系统闹钟权限，才能尽量按时响铃'}</Text><View style={styles.statusRow}><Text style={styles.statusDot}>{alarmReady ? '●' : '○'}</Text><Text style={[styles.statusText, alarmReady && styles.statusReady]}>{alarmReady ? '闹钟级权限已开启' : '闹钟级权限未完成'}</Text></View><Pressable style={styles.alarmPermissionButton} onPress={onOpenAlarm}><Text style={styles.alarmPermissionText}>{alarmReady ? '打开系统提醒设置' : '去开启闹钟权限'}</Text></Pressable><Pressable style={styles.testButton} onPress={onTest}><Text style={styles.testButtonText}>立即测试响铃和振动</Text></Pressable></View><View style={styles.settingCard}><Text style={styles.settingTitle}>后台常驻提醒</Text><Text style={styles.settingSub}>{backgroundEnabled ? '已打开，退出吃哟咯后仍会在后台等待提醒' : '未打开，建议打开后再关闭 App'}</Text><View style={styles.switchRow}><View style={styles.switchCopy}><Text style={styles.statusText}>{backgroundEnabled ? '后台常驻已开启' : '后台常驻已关闭'}</Text><Text style={styles.helper}>系统会显示一条后台提醒通知，这是为了让到点响铃不被系统清理。</Text></View><Switch value={backgroundEnabled} onValueChange={onToggleBackground} trackColor={{ true: colors.teal }} thumbColor="#FFF" /></View><View style={styles.statusRow}><Text style={styles.statusDot}>{backgroundReady ? '●' : '○'}</Text><Text style={[styles.statusText, backgroundReady && styles.statusReady]}>{backgroundReady ? '电池优化已放行' : '还需允许后台运行'}</Text></View><Pressable style={styles.secondaryButton} onPress={onOpenBackground}><Text style={styles.secondaryText}>{backgroundReady ? '检查后台设置' : '允许后台运行'}</Text></Pressable><Text style={styles.permissionHint}>如果手机还有“自启动”“后台耗电”设置，也请允许吃哟咯自启动并设为“不限制”。</Text></View><View style={styles.settingCard}><Text style={styles.settingTitle}>导出调试日志</Text><Text style={styles.settingSub}>遇到没有响铃、没有通知或权限显示不对时，导出后发给我。日志不包含药品名称和备注。</Text><Pressable style={styles.secondaryButton} onPress={onExport}><Text style={styles.secondaryText}>导出调试日志</Text></Pressable></View><View style={styles.settingCard}><Text style={styles.settingTitle}>关于吃哟咯</Text><Text style={styles.settingSub}>每种药品都有自己的确认状态。系统通知被划掉或错过后，App 仍会保留“待确认”，直到你点击“确认已吃药”。</Text></View><View style={styles.settingCard}><Text style={styles.settingTitle}>吃哟咯</Text><Text style={styles.settingSub}>按时吃药提醒 · v0.1.0</Text></View></ScrollView>;
 }
 

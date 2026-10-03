@@ -1,6 +1,7 @@
 package com.sindreyang.sindreeatyo
 
 import android.app.Activity
+import android.app.ActivityOptions
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -32,6 +33,10 @@ import android.widget.TextView
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 
+object EatYoAppVisibility {
+  @Volatile var mainActivityVisible = false
+}
+
 class AlarmForegroundService : Service() {
   private val handler = Handler(Looper.getMainLooper())
   private var ringtone: Ringtone? = null
@@ -49,14 +54,13 @@ class AlarmForegroundService : Service() {
     super.onCreate()
     running = true
     createChannels()
-    restoreActiveAlarm()
   }
 
   override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
     when (intent?.action) {
       ACTION_START_ALARM -> startAlarm(intent)
-      ACTION_STOP_ALARM -> stopCurrentAlarm()
-      else -> if (!hasActiveAlarm()) startBackgroundNotification()
+      ACTION_STOP_ALARM -> stopCurrentAlarm(intent)
+      else -> if (AlarmPermissionModule.preferences(this).getBoolean(KEY_ACTIVE_ALARM, false)) restoreActiveAlarm() else startBackgroundNotification()
     }
     return START_STICKY
   }
@@ -65,6 +69,7 @@ class AlarmForegroundService : Service() {
     handler.removeCallbacksAndMessages(null)
     stopAlertBurst()
     running = false
+    AlarmPermissionModule.recordEvent(this, "background_service_destroyed")
     super.onDestroy()
   }
 
@@ -99,7 +104,7 @@ class AlarmForegroundService : Service() {
       stopSelf()
       return
     }
-    if (intent.getBooleanExtra(EXTRA_TEST, false)) handler.postDelayed({ stopCurrentAlarm() }, TEST_DURATION_MS)
+    if (intent.getBooleanExtra(EXTRA_TEST, false)) handler.postDelayed({ stopCurrentAlarm(null) }, TEST_DURATION_MS)
   }
 
   private fun activateAlarm() {
@@ -111,11 +116,16 @@ class AlarmForegroundService : Service() {
     startAsForeground(ALARM_NOTIFICATION_ID, notification)
     (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).notify(ALARM_NOTIFICATION_ID, notification)
     currentNotificationId = ALARM_NOTIFICATION_ID
-    showAlarmActivity(title, body, itemId, dueAt)
+    AlarmPermissionModule.recordEvent(this, "notification_posted")
     ringOnce()
+    showAlarmActivity(title, body, itemId, dueAt)
   }
 
   private fun showAlarmActivity(title: String, body: String, itemId: String, dueAt: String) {
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && !EatYoAppVisibility.mainActivityVisible) {
+      AlarmPermissionModule.recordEvent(this, "alarm_activity_via_full_screen_notification")
+      return
+    }
     try {
       startActivity(Intent(this, MedicationAlarmActivity::class.java).apply {
         putExtra(EXTRA_TITLE, title)
@@ -124,7 +134,7 @@ class AlarmForegroundService : Service() {
         putExtra(EXTRA_DUE_AT, dueAt)
         addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
       })
-      AlarmPermissionModule.recordEvent(this, "alarm_activity_requested")
+      AlarmPermissionModule.recordEvent(this, "alarm_activity_requested_foreground")
     } catch (error: Exception) {
       AlarmPermissionModule.recordEvent(this, "alarm_activity_failed_${error.javaClass.simpleName}")
     }
@@ -162,7 +172,7 @@ class AlarmForegroundService : Service() {
     }
     val requestCode = ("$itemId-$dueAt".hashCode() and 0x7fffffff)
     val flags = PendingIntent.FLAG_UPDATE_CURRENT or immutableFlag()
-    val fullScreen = PendingIntent.getActivity(this, requestCode, intent, flags)
+    val fullScreen = PendingIntent.getActivity(this, requestCode, intent, flags, pendingIntentCreatorOptions())
     return NotificationCompat.Builder(this, ALARM_CHANNEL)
       .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
       .setContentTitle(title)
@@ -214,11 +224,18 @@ class AlarmForegroundService : Service() {
         AlarmPermissionModule.recordEvent(this, "ringtone_failed_${error.javaClass.simpleName}")
         mediaPlayer?.release()
         mediaPlayer = null
-        ringtone = RingtoneManager.getRingtone(this, uri)
-        ringtone?.audioAttributes = attributes
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) ringtone?.isLooping = true
-        ringtone?.play()
-        AlarmPermissionModule.recordEvent(this, "ringtone_fallback")
+        try {
+          ringtone = RingtoneManager.getRingtone(this, uri)
+          ringtone?.audioAttributes = attributes
+          if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) ringtone?.isLooping = true
+          ringtone?.play()
+          AlarmPermissionModule.recordEvent(this, "ringtone_fallback")
+        } catch (fallbackError: Exception) {
+          AlarmPermissionModule.recordEvent(this, "ringtone_fallback_failed_${fallbackError.javaClass.simpleName}")
+        }
+      }
+    } else {
+      AlarmPermissionModule.recordEvent(this, "ringtone_unavailable")
       }
     }
     vibrator = getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
@@ -254,7 +271,14 @@ class AlarmForegroundService : Service() {
     audioManager = null
   }
 
-  private fun stopCurrentAlarm() {
+  private fun stopCurrentAlarm(intent: Intent?) {
+    val requestedItemId = intent?.getStringExtra(EXTRA_ITEM_ID)
+    val requestedDueAt = intent?.getStringExtra(EXTRA_DUE_AT)
+    val activeMatches = requestedItemId.isNullOrBlank() || (requestedItemId == activeItemId && (requestedDueAt.isNullOrBlank() || requestedDueAt == activeDueAt))
+    if (!activeMatches) {
+      AlarmPermissionModule.recordEvent(this, "alarm_stop_ignored_for_different_dose")
+      return
+    }
     handler.removeCallbacksAndMessages(null)
     stopAlertBurst()
     activeTitle = null
@@ -284,7 +308,14 @@ class AlarmForegroundService : Service() {
 
   private fun openAppPendingIntent(): PendingIntent {
     val intent = Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
-    return PendingIntent.getActivity(this, 7001, intent, PendingIntent.FLAG_UPDATE_CURRENT or immutableFlag())
+    return PendingIntent.getActivity(this, 7001, intent, PendingIntent.FLAG_UPDATE_CURRENT or immutableFlag(), pendingIntentCreatorOptions())
+  }
+
+  private fun pendingIntentCreatorOptions(): Bundle? {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE) return null
+    return ActivityOptions.makeBasic().apply {
+      pendingIntentCreatorBackgroundActivityStartMode = ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED
+    }.toBundle()
   }
 
   private fun createChannels() {
@@ -319,7 +350,7 @@ class AlarmForegroundService : Service() {
     const val EXTRA_ITEM_ID = "itemId"
     const val EXTRA_DUE_AT = "dueAt"
     const val EXTRA_TEST = "testAlarm"
-    private const val ALARM_CHANNEL = "eat-yo-native-alarm-v5"
+    private const val ALARM_CHANNEL = "eat-yo-native-alarm-v6"
     private const val BACKGROUND_CHANNEL = "eat-yo-native-background-v1"
     private const val ALARM_NOTIFICATION_ID = 7021
     private const val BACKGROUND_NOTIFICATION_ID = 7022
@@ -361,8 +392,11 @@ class AlarmForegroundService : Service() {
       startCompat(context, intent)
     }
 
-    fun stopActive(context: Context) {
-      startCompat(context, Intent(context, AlarmForegroundService::class.java).setAction(ACTION_STOP_ALARM))
+    fun stopActive(context: Context, itemId: String? = null, dueAt: String? = null) {
+      startCompat(context, Intent(context, AlarmForegroundService::class.java).setAction(ACTION_STOP_ALARM).apply {
+        putExtra(EXTRA_ITEM_ID, itemId ?: "")
+        putExtra(EXTRA_DUE_AT, dueAt ?: "")
+      })
     }
 
     private fun startCompat(context: Context, intent: Intent) {
