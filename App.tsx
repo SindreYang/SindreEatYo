@@ -258,7 +258,7 @@ function AppContent() {
       <View style={styles.content}>
         {tab === 'today' && <TodayScreen pending={pending} hasItems={data.items.length > 0} itemById={itemById} onConfirm={confirmDose} onSnooze={snoozeDose} onAdd={() => setEditing(emptyItem())} />}
         {tab === 'items' && <ItemsScreen items={data.items} onEdit={setEditing} onDelete={deleteItem} onAdd={() => setEditing(emptyItem())} />}
-        {tab === 'settings' && <SettingsScreen notificationGranted={notificationGranted} alarmStatus={alarmStatus} onRequest={async () => { setNotificationGranted(await prepareNotifications()); await refreshAlarmStatus(); }} onOpenAlarm={() => void openAlarmPermissionSettings(alarmStatus)} onTest={() => void testAlarm().then(() => addDebugLog('test_alarm_requested'))} onExport={() => void exportDebugLog()} />}
+        {tab === 'settings' && <SettingsScreen notificationGranted={notificationGranted} alarmStatus={alarmStatus} onRequest={async () => { setNotificationGranted(await prepareNotifications()); await refreshAlarmStatus(); }} onOpenAlarm={() => void openAlarmPermissionSettings(alarmStatus)} onTest={() => void testAlarm().then(() => addDebugLog('test_alarm_requested')).catch(() => Alert.alert('测试失败', '请先检查通知权限，并导出调试日志。'))} onExport={() => void exportDebugLog()} />}
       </View>
       <View style={styles.tabs}>
         <TabButton icon="⌂" label="今日" active={tab === 'today'} onPress={() => setTab('today')} />

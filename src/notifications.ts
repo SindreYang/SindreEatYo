@@ -245,14 +245,28 @@ export async function rescheduleAll(items: YoItem[]): Promise<void> {
 
 export async function getNativeAlarmStatus() {
   if (Platform.OS !== 'android' || !nativeAlarm?.getStatus) return null;
-  return nativeAlarm.getStatus();
+  try {
+    const status = await nativeAlarm.getStatus();
+    await addDebugLog('alarm_permission_status', status);
+    return status;
+  } catch (error) {
+    await addDebugLog('alarm_permission_status_failed', { error: error instanceof Error ? error.message : String(error) }, 'error');
+    return null;
+  }
 }
 
 export async function testAlarm() {
-  if (Platform.OS === 'android' && nativeAlarm?.testAlarm) {
-    await nativeAlarm.testAlarm();
+  try {
+    if (Platform.OS === 'android' && nativeAlarm?.testAlarm) {
+      await nativeAlarm.testAlarm();
+      await addDebugLog('test_alarm_sent', { native: true });
+      return true;
+    }
+    await Notifications.scheduleNotificationAsync({ content: notificationContent({ ...({} as YoItem), id: 'test', name: '测试提醒', note: '', sound: 'urgent' }), trigger: null });
+    await addDebugLog('test_alarm_sent', { native: false });
     return true;
+  } catch (error) {
+    await addDebugLog('test_alarm_failed', { error: error instanceof Error ? error.message : String(error) }, 'error');
+    throw error;
   }
-  await Notifications.scheduleNotificationAsync({ content: notificationContent({ ...({} as YoItem), id: 'test', name: '测试提醒', note: '', sound: 'urgent' }), trigger: null });
-  return true;
 }
