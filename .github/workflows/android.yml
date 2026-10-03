@@ -20,8 +20,10 @@ jobs:
           java-version: 17
       - run: npm ci
       - run: npx expo prebuild --platform android --no-install
-      - run: chmod +x android/gradlew && android/gradlew -p android assembleDebug
+      # Release variants embed the Metro/Expo JS bundle, so the APK can start
+      # on a physical device without a development computer running Metro.
+      - run: chmod +x android/gradlew && android/gradlew -p android assembleRelease
       - uses: actions/upload-artifact@v4
         with:
-          name: SindreEatYo-android-debug
-          path: android/app/build/outputs/apk/debug/app-debug.apk
+          name: SindreEatYo-android-standalone
+          path: android/app/build/outputs/apk/release/app-release.apk
