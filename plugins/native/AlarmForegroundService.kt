@@ -11,6 +11,9 @@ import android.content.Intent
 import android.graphics.Color
 import android.graphics.drawable.ColorDrawable
 import android.media.AudioAttributes
+import android.media.AudioFocusRequest
+import android.media.AudioManager
+import android.media.MediaPlayer
 import android.media.Ringtone
 import android.media.RingtoneManager
 import android.os.Build
@@ -20,6 +23,7 @@ import android.os.IBinder
 import android.os.Looper
 import android.os.VibrationEffect
 import android.os.Vibrator
+import android.os.PowerManager
 import android.view.Gravity
 import android.view.WindowManager
 import android.widget.Button
@@ -31,6 +35,9 @@ import androidx.core.content.ContextCompat
 class AlarmForegroundService : Service() {
   private val handler = Handler(Looper.getMainLooper())
   private var ringtone: Ringtone? = null
+  private var mediaPlayer: MediaPlayer? = null
+  private var audioManager: AudioManager? = null
+  private var audioFocusRequest: AudioFocusRequest? = null
   private var vibrator: Vibrator? = null
   private var currentNotificationId: Int? = null
 
@@ -80,6 +87,7 @@ class AlarmForegroundService : Service() {
     val test = intent.getBooleanExtra(EXTRA_TEST, false)
     val notification = alarmNotification(title, body, itemId, dueAt)
     startAsForeground(ALARM_NOTIFICATION_ID, notification)
+    (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).notify(ALARM_NOTIFICATION_ID, notification)
     currentNotificationId = ALARM_NOTIFICATION_ID
     startAlert()
     AlarmPermissionModule.recordEvent(this, "alarm_service_started")
@@ -122,11 +130,35 @@ class AlarmForegroundService : Service() {
     val uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
       ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
     if (uri != null) {
-      ringtone = RingtoneManager.getRingtone(this, uri)
-      ringtone?.audioAttributes = attributes
-      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) ringtone?.isLooping = true
-      ringtone?.play()
-      AlarmPermissionModule.recordEvent(this, "ringtone_started")
+      try {
+        audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+          audioFocusRequest = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_EXCLUSIVE)
+            .setAudioAttributes(attributes)
+            .build()
+          audioManager?.requestAudioFocus(audioFocusRequest!!)
+        } else {
+          @Suppress("DEPRECATION")
+          audioManager?.requestAudioFocus(null, AudioManager.STREAM_ALARM, AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_EXCLUSIVE)
+        }
+        mediaPlayer = MediaPlayer().apply {
+          setAudioAttributes(attributes)
+          setWakeMode(this@AlarmForegroundService, PowerManager.PARTIAL_WAKE_LOCK)
+          setDataSource(this@AlarmForegroundService, uri)
+          isLooping = true
+          prepare()
+          start()
+        }
+        AlarmPermissionModule.recordEvent(this, "ringtone_started")
+      } catch (error: Exception) {
+        AlarmPermissionModule.recordEvent(this, "ringtone_failed_${error.javaClass.simpleName}")
+        mediaPlayer?.release()
+        mediaPlayer = null
+        ringtone = RingtoneManager.getRingtone(this, uri)
+        ringtone?.audioAttributes = attributes
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) ringtone?.isLooping = true
+        ringtone?.play()
+      }
     }
     vibrator = getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
     if (vibrator?.hasVibrator() == true) {
@@ -140,10 +172,21 @@ class AlarmForegroundService : Service() {
   }
 
   private fun stopAlert() {
+    try {
+      mediaPlayer?.let { if (it.isPlaying) it.stop(); it.reset(); it.release() }
+    } catch (_: Exception) { }
+    mediaPlayer = null
     ringtone?.stop()
     ringtone = null
     vibrator?.cancel()
     vibrator = null
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) audioFocusRequest?.let { audioManager?.abandonAudioFocusRequest(it) }
+    else {
+      @Suppress("DEPRECATION")
+      audioManager?.abandonAudioFocus(null)
+    }
+    audioFocusRequest = null
+    audioManager = null
   }
 
   private fun stopCurrentAlarm() {

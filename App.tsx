@@ -41,11 +41,9 @@ const colors = {
   line: '#EEDDD6',
 };
 
-const timeOptions = Array.from({ length: 96 }, (_, index) => {
-  const hour = Math.floor(index / 4).toString().padStart(2, '0');
-  const minute = ((index % 4) * 15).toString().padStart(2, '0');
-  return `${hour}:${minute}`;
-});
+const hourOptions = Array.from({ length: 24 }, (_, hour) => hour.toString().padStart(2, '0'));
+const minuteOptions = Array.from({ length: 60 }, (_, minute) => minute.toString().padStart(2, '0'));
+const WHEEL_ITEM_HEIGHT = 44;
 const intervalOptions = [1, 2, 3, 4, 6, 8, 12, 24].map((hours) => ({ value: String(hours), label: `每 ${hours} 小时` }));
 const delayOptions = [5, 10, 15, 30, 60].map((minutes) => ({ value: String(minutes), label: `间隔 ${minutes} 分钟` }));
 const APP_PACKAGE = 'com.sindreyang.sindreeatyo';
@@ -316,6 +314,59 @@ function OptionPicker({ visible, title, options, value, onSelect, onClose }: { v
   return <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}><Pressable style={styles.pickerBackdrop} onPress={onClose}><Pressable style={styles.pickerSheet} onPress={(event) => event.stopPropagation()}><View style={styles.pickerHeader}><Text style={styles.pickerTitle}>{title}</Text><Pressable onPress={onClose}><Text style={styles.link}>关闭</Text></Pressable></View><FlatList data={options} keyExtractor={(option) => option.value} style={styles.pickerList} renderItem={({ item: option }) => <Pressable style={[styles.pickerOption, option.value === value && styles.pickerOptionOn]} onPress={() => { onSelect(option.value); onClose(); }}><Text style={[styles.pickerOptionText, option.value === value && styles.pickerOptionTextOn]}>{option.label}</Text>{option.value === value && <Text style={styles.check}>✓</Text>}</Pressable>} /></Pressable></Pressable></Modal>;
 }
 
+function TimeWheelPicker({ visible, value, onSelect, onClose }: { visible: boolean; value: string; onSelect: (value: string) => void; onClose: () => void }) {
+  const [rawHour, rawMinute] = value.split(':');
+  const initialHour = hourOptions.includes(rawHour) ? rawHour : '08';
+  const initialMinute = minuteOptions.includes(rawMinute) ? rawMinute : '00';
+  const [hour, setHour] = useState(initialHour);
+  const [minute, setMinute] = useState(initialMinute);
+
+  useEffect(() => {
+    if (visible) {
+      setHour(initialHour);
+      setMinute(initialMinute);
+    }
+  }, [visible, initialHour, initialMinute]);
+
+  const finish = () => {
+    onSelect(`${hour}:${minute}`);
+    onClose();
+  };
+  const onWheelEnd = (values: string[], setValue: (value: string) => void) => (event: { nativeEvent: { contentOffset: { y: number } } }) => {
+    const index = Math.max(0, Math.min(values.length - 1, Math.round(event.nativeEvent.contentOffset.y / WHEEL_ITEM_HEIGHT)));
+    setValue(values[index]);
+  };
+  const renderWheel = (values: string[], selected: string, setValue: (value: string) => void, key: string) => (
+    <FlatList
+      key={`${visible}-${key}-${initialHour}-${initialMinute}`}
+      data={values}
+      style={styles.wheelList}
+      contentContainerStyle={styles.wheelContent}
+      showsVerticalScrollIndicator={false}
+      snapToInterval={WHEEL_ITEM_HEIGHT}
+      decelerationRate="fast"
+      initialScrollIndex={Math.max(0, values.indexOf(selected))}
+      getItemLayout={(_, index) => ({ length: WHEEL_ITEM_HEIGHT, offset: WHEEL_ITEM_HEIGHT * index, index })}
+      keyExtractor={(entry) => `${key}-${entry}`}
+      onMomentumScrollEnd={onWheelEnd(values, setValue)}
+      onScrollEndDrag={onWheelEnd(values, setValue)}
+      renderItem={({ item: entry }) => <View style={[styles.wheelItem, entry === selected && styles.wheelItemOn]}><Text style={[styles.wheelItemText, entry === selected && styles.wheelItemTextOn]}>{entry}</Text></View>}
+    />
+  );
+
+  return <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
+    <Pressable style={styles.pickerBackdrop} onPress={onClose}>
+      <Pressable style={styles.pickerSheet} onPress={(event) => event.stopPropagation()}>
+        <View style={styles.pickerHeader}><Text style={styles.pickerTitle}>选择吃药时间</Text><Pressable hitSlop={8} onPress={finish}><Text style={styles.link}>完成</Text></Pressable></View>
+        <View style={styles.wheelRow}>
+          <View style={styles.wheelColumn}>{renderWheel(hourOptions, hour, setHour, 'hour')}<Text style={styles.wheelUnit}>时</Text></View>
+          <View style={styles.wheelColumn}>{renderWheel(minuteOptions, minute, setMinute, 'minute')}<Text style={styles.wheelUnit}>分</Text></View>
+        </View>
+      </Pressable>
+    </Pressable>
+  </Modal>;
+}
+
 function SelectField({ label, value, onPress }: { label?: string; value: string; onPress: () => void }) {
   return <View>{label && <Text style={styles.helper}>{label}</Text>}<Pressable style={styles.selectField} onPress={onPress}><Text style={styles.selectText}>{value}</Text><Text style={styles.chevron}>⌄</Text></Pressable></View>;
 }
@@ -349,7 +400,7 @@ function ItemEditor({ item, onClose, onSave }: { item: YoItem | null; onClose: (
       </ScrollView>
       <View style={styles.modalFooter}><Pressable style={styles.saveButton} onPress={save}><Text style={styles.saveButtonText}>保存提醒</Text></Pressable></View>
       <OptionPicker visible={picker === 'interval'} title="选择提醒间隔" options={intervalOptions} value={String(draft.intervalHours)} onSelect={(value) => set('intervalHours', Number(value))} onClose={() => setPicker(null)} />
-      <OptionPicker visible={picker === 'time'} title="选择提醒时间" options={timeOptions.map((value) => ({ value, label: value }))} value={selectedTime} onSelect={(value) => set('fixedTimes', draft.fixedTimes.map((time, index) => index === editingTimeIndex ? value : time))} onClose={() => setPicker(null)} />
+      <TimeWheelPicker visible={picker === 'time'} value={selectedTime} onSelect={(value) => set('fixedTimes', draft.fixedTimes.map((time, index) => index === editingTimeIndex ? value : time))} onClose={() => setPicker(null)} />
       <OptionPicker visible={picker === 'delay'} title="选择第二次提醒间隔" options={delayOptions} value={String(draft.secondBellDelayMinutes)} onSelect={(value) => set('secondBellDelayMinutes', Number(value))} onClose={() => setPicker(null)} />
     </KeyboardAvoidingView>
     </SafeAreaView>
@@ -366,5 +417,5 @@ const styles = StyleSheet.create({
   tabs: { minHeight: 75, backgroundColor: '#FFF', borderTopWidth: 1, borderTopColor: colors.line, flexDirection: 'row', justifyContent: 'space-around', paddingTop: 9 }, tab: { alignItems: 'center', justifyContent: 'center', flex: 1, minHeight: 58 }, tabIcon: { fontSize: 21, color: '#B8A59D' }, tabLabel: { color: '#B8A59D', fontSize: 12, marginTop: 3 }, tabActive: { color: colors.coral, fontWeight: '800' }, toolbar: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingTop: 20, paddingBottom: 5 }, link: { color: colors.coral, fontWeight: '800', minHeight: 44, textAlignVertical: 'center' }, addMedicineButton: { minHeight: 44, paddingHorizontal: 12, borderRadius: 13, backgroundColor: colors.coral, alignItems: 'center', justifyContent: 'center' }, addMedicineText: { color: '#FFF', fontWeight: '800', fontSize: 14 }, list: { paddingVertical: 10, paddingBottom: 35 }, itemCard: { backgroundColor: colors.card, borderRadius: 18, padding: 12, marginBottom: 10, flexDirection: 'row', alignItems: 'center' }, itemIcon: { backgroundColor: colors.tealSoft, width: 46, height: 46, borderRadius: 15, alignItems: 'center', justifyContent: 'center', marginRight: 10 }, itemMain: { flex: 1, minHeight: 58, justifyContent: 'center' }, itemName: { color: colors.ink, fontSize: 16, fontWeight: '800' }, itemNote: { color: colors.muted, fontSize: 12, marginTop: 3 }, itemRule: { color: colors.coral, fontSize: 12, marginTop: 6 }, itemRight: { alignItems: 'flex-end', marginLeft: 5 }, bell: { fontSize: 13, marginBottom: 2 }, itemActions: { flexDirection: 'row', alignItems: 'center' }, itemActionButton: { minWidth: 44, minHeight: 44, alignItems: 'center', justifyContent: 'center' }, editText: { color: colors.teal, fontSize: 12, fontWeight: '800' }, delete: { color: colors.red, fontSize: 12, fontWeight: '700' },
   settingCard: { backgroundColor: colors.card, borderRadius: 20, padding: 18, marginBottom: 12 }, settingTitle: { color: colors.ink, fontWeight: '800', fontSize: 16 }, settingSub: { color: colors.muted, lineHeight: 20, marginTop: 7 }, statusRow: { flexDirection: 'row', alignItems: 'center', marginTop: 12 }, statusDot: { color: colors.teal, fontSize: 17, marginRight: 7 }, statusText: { color: colors.ink, fontWeight: '700' }, statusReady: { color: colors.teal }, secondaryButton: { alignSelf: 'flex-start', minHeight: 44, borderWidth: 1, borderColor: colors.coral, borderRadius: 12, paddingHorizontal: 14, marginTop: 14, alignItems: 'center', justifyContent: 'center' }, secondaryText: { color: colors.coral, fontWeight: '800' }, permissionDivider: { height: 1, backgroundColor: colors.line, marginVertical: 18 }, alarmPermissionButton: { alignSelf: 'flex-start', minHeight: 44, borderWidth: 1, borderColor: colors.teal, borderRadius: 12, paddingHorizontal: 14, marginTop: 12, alignItems: 'center', justifyContent: 'center' }, alarmPermissionText: { color: colors.teal, fontWeight: '800' }, testButton: { alignSelf: 'flex-start', minHeight: 44, borderRadius: 12, paddingHorizontal: 14, marginTop: 10, backgroundColor: colors.coralSoft, alignItems: 'center', justifyContent: 'center' }, testButtonText: { color: colors.coral, fontWeight: '800' }, permissionHint: { color: colors.muted, fontSize: 12, lineHeight: 18, marginTop: 9 },
   modal: { flex: 1, backgroundColor: colors.bg }, modalHeader: { minHeight: 62, paddingHorizontal: 20, paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: colors.line, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#FFF' }, modalTitle: { color: colors.ink, fontWeight: '800', fontSize: 18 }, headerSpacer: { width: 36 }, formScroll: { flex: 1 }, form: { padding: 20, paddingBottom: 34 }, formIntro: { color: colors.muted, lineHeight: 20, marginBottom: 4 }, label: { color: colors.ink, fontWeight: '800', marginTop: 17, marginBottom: 8 }, helper: { color: colors.muted, fontSize: 12, marginBottom: 8 }, input: { backgroundColor: '#FFF', borderRadius: 14, borderWidth: 1, borderColor: colors.line, color: colors.ink, paddingHorizontal: 14, paddingVertical: 12, fontSize: 16 }, textarea: { minHeight: 74, textAlignVertical: 'top' }, controlBlock: { marginTop: 2 }, segment: { flexDirection: 'row', gap: 8 }, segmentButton: { flex: 1, borderRadius: 12, borderWidth: 1, borderColor: colors.line, paddingVertical: 13, alignItems: 'center', backgroundColor: '#FFF' }, segmentActive: { backgroundColor: colors.coralSoft, borderColor: colors.coral }, segmentText: { color: colors.muted, fontWeight: '700' }, segmentTextActive: { color: colors.coral }, timeRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 8 }, timeFieldWrap: { flex: 1 }, selectField: { minHeight: 49, backgroundColor: '#FFF', borderRadius: 14, borderWidth: 1, borderColor: colors.line, paddingHorizontal: 14, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }, selectText: { color: colors.ink, fontSize: 16, fontWeight: '600' }, chevron: { color: colors.coral, fontSize: 22, lineHeight: 22 }, addTimeButton: { paddingVertical: 10 }, weekdays: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 4 }, weekday: { width: 37, height: 37, borderRadius: 19, borderWidth: 1, borderColor: colors.line, backgroundColor: '#FFF', alignItems: 'center', justifyContent: 'center' }, weekdayOn: { backgroundColor: colors.coral, borderColor: colors.coral }, weekdayText: { color: colors.muted, fontWeight: '700' }, weekdayTextOn: { color: '#FFF' }, switchRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 20, paddingBottom: 4 }, switchCopy: { flex: 1 }, modalFooter: { paddingHorizontal: 20, paddingTop: 10, paddingBottom: Platform.OS === 'ios' ? 22 : 14, borderTopWidth: 1, borderTopColor: colors.line, backgroundColor: '#FFF' }, saveButton: { minHeight: 50, borderRadius: 15, backgroundColor: colors.coral, alignItems: 'center', justifyContent: 'center' }, saveButtonText: { color: '#FFF', fontSize: 16, fontWeight: '800' },
-  pickerBackdrop: { flex: 1, backgroundColor: 'rgba(51,43,43,0.35)', justifyContent: 'flex-end' }, pickerSheet: { maxHeight: '78%', backgroundColor: colors.bg, borderTopLeftRadius: 24, borderTopRightRadius: 24, paddingBottom: 16 }, pickerHeader: { paddingHorizontal: 20, paddingVertical: 16, backgroundColor: '#FFF', borderTopLeftRadius: 24, borderTopRightRadius: 24, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }, pickerTitle: { color: colors.ink, fontSize: 17, fontWeight: '800' }, pickerList: { paddingHorizontal: 14, paddingTop: 10 }, pickerOption: { minHeight: 48, paddingHorizontal: 16, borderRadius: 13, backgroundColor: '#FFF', marginBottom: 7, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }, pickerOptionOn: { backgroundColor: colors.coralSoft, borderWidth: 1, borderColor: colors.coral }, pickerOptionText: { color: colors.ink, fontSize: 16 }, pickerOptionTextOn: { color: colors.coral, fontWeight: '800' }, check: { color: colors.coral, fontSize: 20, fontWeight: '800' },
+  pickerBackdrop: { flex: 1, backgroundColor: 'rgba(51,43,43,0.35)', justifyContent: 'flex-end' }, pickerSheet: { maxHeight: '78%', backgroundColor: colors.bg, borderTopLeftRadius: 24, borderTopRightRadius: 24, paddingBottom: 16 }, pickerHeader: { paddingHorizontal: 20, paddingVertical: 16, backgroundColor: '#FFF', borderTopLeftRadius: 24, borderTopRightRadius: 24, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }, pickerTitle: { color: colors.ink, fontSize: 17, fontWeight: '800' }, pickerList: { paddingHorizontal: 14, paddingTop: 10 }, pickerOption: { minHeight: 48, paddingHorizontal: 16, borderRadius: 13, backgroundColor: '#FFF', marginBottom: 7, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }, pickerOptionOn: { backgroundColor: colors.coralSoft, borderWidth: 1, borderColor: colors.coral }, pickerOptionText: { color: colors.ink, fontSize: 16 }, pickerOptionTextOn: { color: colors.coral, fontWeight: '800' }, check: { color: colors.coral, fontSize: 20, fontWeight: '800' }, wheelRow: { flexDirection: 'row', justifyContent: 'center', paddingHorizontal: 30, paddingVertical: 12 }, wheelColumn: { width: 100, alignItems: 'center', marginHorizontal: 12 }, wheelList: { height: 220, width: 100 }, wheelContent: { paddingVertical: 88 }, wheelItem: { height: WHEEL_ITEM_HEIGHT, alignItems: 'center', justifyContent: 'center', borderRadius: 12 }, wheelItemOn: { backgroundColor: colors.coralSoft, borderWidth: 1, borderColor: colors.coral }, wheelItemText: { color: colors.muted, fontSize: 20, fontWeight: '600' }, wheelItemTextOn: { color: colors.coral, fontSize: 24, fontWeight: '800' }, wheelUnit: { color: colors.ink, fontSize: 15, fontWeight: '800', marginTop: 4 },
 });
