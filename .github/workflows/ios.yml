@@ -1,0 +1,31 @@
+name: iOS Build
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  ios-simulator:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npx expo prebuild --platform ios --no-install
+      - run: npx pod-install
+      - name: Build iOS Simulator app
+        run: >-
+          xcodebuild -workspace ios/SindreEatYo.xcworkspace
+          -scheme SindreEatYo
+          -sdk iphonesimulator
+          -configuration Debug
+          -derivedDataPath build
+          CODE_SIGNING_ALLOWED=NO build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SindreEatYo-ios-simulator
+          path: build/Build/Products/Debug-iphonesimulator/SindreEatYo.app

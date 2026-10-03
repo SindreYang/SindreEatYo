@@ -1,0 +1,22 @@
+{
+  "expo": {
+    "name": "SindreEatYo",
+    "slug": "sindre-eat-yo",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "automatic",
+    "scheme": "sindreeatyo",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.sindreyang.sindreeatyo",
+      "infoPlist": {
+        "NSUserNotificationsUsageDescription": "允许 SindreEatYo 在吃哟时间提醒你。"
+      }
+    },
+    "android": {
+      "package": "com.sindreyang.sindreeatyo",
+      "permissions": ["SCHEDULE_EXACT_ALARM", "POST_NOTIFICATIONS", "VIBRATE", "RECEIVE_BOOT_COMPLETED"]
+    },
+    "plugins": ["expo-notifications"]
+  }
+}
