@@ -19,13 +19,13 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
-import { emptyItem, PendingDose, AppData, YoItem, ReminderSound } from './src/types';
+import { emptyItem, PendingDose, AppData, YoItem } from './src/types';
 import { loadData, saveData } from './src/storage';
-import { getNativeAlarmStatus, notificationContent, prepareNotifications, rescheduleAll, soundLabels, testAlarm } from './src/notifications';
+import { getNativeAlarmStatus, notificationContent, openBatteryOptimizationSettings, prepareNotifications, rescheduleAll, testAlarm } from './src/notifications';
 import { addDebugLog, exportDebugLog } from './src/debugLog';
 
 type Tab = 'today' | 'items' | 'settings';
-type PickerKind = 'interval' | 'time' | 'delay' | 'sound' | null;
+type PickerKind = 'interval' | 'time' | 'delay' | null;
 
 const colors = {
   bg: '#FFF8F3',
@@ -48,10 +48,9 @@ const timeOptions = Array.from({ length: 96 }, (_, index) => {
 });
 const intervalOptions = [1, 2, 3, 4, 6, 8, 12, 24].map((hours) => ({ value: String(hours), label: `每 ${hours} 小时` }));
 const delayOptions = [5, 10, 15, 30, 60].map((minutes) => ({ value: String(minutes), label: `间隔 ${minutes} 分钟` }));
-const soundOptions = (Object.keys(soundLabels) as ReminderSound[]).map((value) => ({ value, label: soundLabels[value] }));
 const APP_PACKAGE = 'com.sindreyang.sindreeatyo';
 
-type AlarmStatus = { exactAlarm: boolean; fullScreen: boolean; notifications: boolean };
+type AlarmStatus = { exactAlarm: boolean; fullScreen: boolean; notifications: boolean; batteryOptimizationIgnored?: boolean; lastAlarmEvent?: string; lastAlarmAt?: string };
 
 async function openAlarmPermissionSettings(status: AlarmStatus | null) {
   if (Platform.OS !== 'android') return;
@@ -258,7 +257,7 @@ function AppContent() {
       <View style={styles.content}>
         {tab === 'today' && <TodayScreen pending={pending} hasItems={data.items.length > 0} itemById={itemById} onConfirm={confirmDose} onSnooze={snoozeDose} onAdd={() => setEditing(emptyItem())} />}
         {tab === 'items' && <ItemsScreen items={data.items} onEdit={setEditing} onDelete={deleteItem} onAdd={() => setEditing(emptyItem())} />}
-        {tab === 'settings' && <SettingsScreen notificationGranted={notificationGranted} alarmStatus={alarmStatus} onRequest={async () => { setNotificationGranted(await prepareNotifications()); await refreshAlarmStatus(); }} onOpenAlarm={() => void openAlarmPermissionSettings(alarmStatus)} onTest={() => void testAlarm().then(() => addDebugLog('test_alarm_requested')).catch(() => Alert.alert('测试失败', '请先检查通知权限，并导出调试日志。'))} onExport={() => void exportDebugLog()} />}
+        {tab === 'settings' && <SettingsScreen notificationGranted={notificationGranted} alarmStatus={alarmStatus} onRequest={async () => { setNotificationGranted(await prepareNotifications()); await refreshAlarmStatus(); }} onOpenAlarm={() => void openAlarmPermissionSettings(alarmStatus)} onOpenBackground={() => void openBatteryOptimizationSettings().then(() => refreshAlarmStatus())} onTest={() => void testAlarm().then(() => addDebugLog('test_alarm_requested')).catch(() => Alert.alert('测试失败', '请先检查通知权限，并导出调试日志。'))} onExport={() => void exportDebugLog()} />}
       </View>
       <View style={styles.tabs}>
         <TabButton icon="⌂" label="今日" active={tab === 'today'} onPress={() => setTab('today')} />
@@ -302,9 +301,10 @@ function ItemsScreen({ items, onEdit, onDelete, onAdd }: { items: YoItem[]; onEd
   </View>;
 }
 
-function SettingsScreen({ notificationGranted, alarmStatus, onRequest, onOpenAlarm, onTest, onExport }: { notificationGranted: boolean; alarmStatus: AlarmStatus | null; onRequest: () => void; onOpenAlarm: () => void; onTest: () => void; onExport: () => void }) {
+function SettingsScreen({ notificationGranted, alarmStatus, onRequest, onOpenAlarm, onOpenBackground, onTest, onExport }: { notificationGranted: boolean; alarmStatus: AlarmStatus | null; onRequest: () => void; onOpenAlarm: () => void; onOpenBackground: () => void; onTest: () => void; onExport: () => void }) {
   const alarmReady = Boolean(alarmStatus?.exactAlarm && alarmStatus?.fullScreen);
-  return <ScrollView contentContainerStyle={styles.scroll}><Text style={styles.sectionTitle}>设置</Text><View style={styles.settingCard}><Text style={styles.settingTitle}>提醒权限</Text><Text style={styles.settingSub}>{notificationGranted ? '通知已允许' : '还没有允许通知，提醒可能不会响'}</Text><View style={styles.statusRow}><Text style={styles.statusDot}>{notificationGranted ? '●' : '○'}</Text><Text style={styles.statusText}>{notificationGranted ? '通知提醒已开启' : '需要开启通知提醒'}</Text></View><Pressable style={styles.secondaryButton} onPress={onRequest}><Text style={styles.secondaryText}>{notificationGranted ? '检查通知设置' : '开启通知权限'}</Text></Pressable><View style={styles.permissionDivider} /><Text style={styles.settingTitle}>闹钟级提醒</Text><Text style={styles.settingSub}>{alarmReady ? '已开启，锁屏和息屏时也可以响铃、振动' : '还需要开启系统闹钟权限，才能尽量按时响铃'}</Text><View style={styles.statusRow}><Text style={styles.statusDot}>{alarmReady ? '●' : '○'}</Text><Text style={[styles.statusText, alarmReady && styles.statusReady]}>{alarmReady ? '闹钟级权限已开启' : '闹钟级权限未完成'}</Text></View><Pressable style={styles.alarmPermissionButton} onPress={onOpenAlarm}><Text style={styles.alarmPermissionText}>{alarmReady ? '打开系统提醒设置' : '去开启闹钟权限'}</Text></Pressable><Pressable style={styles.testButton} onPress={onTest}><Text style={styles.testButtonText}>立即测试响铃和振动</Text></Pressable></View><View style={styles.settingCard}><Text style={styles.settingTitle}>导出调试日志</Text><Text style={styles.settingSub}>遇到没有响铃、没有通知或权限显示不对时，导出后发给我。日志不包含药品名称和备注。</Text><Pressable style={styles.secondaryButton} onPress={onExport}><Text style={styles.secondaryText}>导出调试日志</Text></Pressable></View><View style={styles.settingCard}><Text style={styles.settingTitle}>关于吃哟咯</Text><Text style={styles.settingSub}>每种药品都有自己的确认状态。系统通知被划掉或错过后，App 仍会保留“待确认”，直到你点击“确认已吃药”。</Text></View><View style={styles.settingCard}><Text style={styles.settingTitle}>吃哟咯</Text><Text style={styles.settingSub}>按时吃药提醒 · v0.1.0</Text></View></ScrollView>;
+  const backgroundReady = alarmStatus?.batteryOptimizationIgnored !== false;
+  return <ScrollView contentContainerStyle={styles.scroll}><Text style={styles.sectionTitle}>设置</Text><View style={styles.settingCard}><Text style={styles.settingTitle}>提醒权限</Text><Text style={styles.settingSub}>{notificationGranted ? '通知已允许' : '还没有允许通知，提醒可能不会响'}</Text><View style={styles.statusRow}><Text style={styles.statusDot}>{notificationGranted ? '●' : '○'}</Text><Text style={styles.statusText}>{notificationGranted ? '通知提醒已开启' : '需要开启通知提醒'}</Text></View><Pressable style={styles.secondaryButton} onPress={onRequest}><Text style={styles.secondaryText}>{notificationGranted ? '检查通知设置' : '开启通知权限'}</Text></Pressable><View style={styles.permissionDivider} /><Text style={styles.settingTitle}>闹钟级提醒</Text><Text style={styles.settingSub}>{alarmReady ? '已开启，锁屏和息屏时也可以响铃、振动' : '还需要开启系统闹钟权限，才能尽量按时响铃'}</Text><View style={styles.statusRow}><Text style={styles.statusDot}>{alarmReady ? '●' : '○'}</Text><Text style={[styles.statusText, alarmReady && styles.statusReady]}>{alarmReady ? '闹钟级权限已开启' : '闹钟级权限未完成'}</Text></View><Pressable style={styles.alarmPermissionButton} onPress={onOpenAlarm}><Text style={styles.alarmPermissionText}>{alarmReady ? '打开系统提醒设置' : '去开启闹钟权限'}</Text></Pressable><Pressable style={styles.testButton} onPress={onTest}><Text style={styles.testButtonText}>立即测试响铃和振动</Text></Pressable></View><View style={styles.settingCard}><Text style={styles.settingTitle}>后台提醒</Text><Text style={styles.settingSub}>{backgroundReady ? '后台保护已开启，系统闹钟会在应用没打开时工作' : '系统可能限制后台提醒，请允许吃哟咯在后台运行'}</Text><View style={styles.statusRow}><Text style={styles.statusDot}>{backgroundReady ? '●' : '○'}</Text><Text style={[styles.statusText, backgroundReady && styles.statusReady]}>{backgroundReady ? '后台保护已开启' : '需要允许后台运行'}</Text></View><Pressable style={styles.secondaryButton} onPress={onOpenBackground}><Text style={styles.secondaryText}>{backgroundReady ? '检查后台设置' : '允许后台运行'}</Text></Pressable><Text style={styles.permissionHint}>如果手机还有“自启动”“后台耗电”设置，也请允许吃哟咯自启动并设为“不限制”。</Text></View><View style={styles.settingCard}><Text style={styles.settingTitle}>导出调试日志</Text><Text style={styles.settingSub}>遇到没有响铃、没有通知或权限显示不对时，导出后发给我。日志不包含药品名称和备注。</Text><Pressable style={styles.secondaryButton} onPress={onExport}><Text style={styles.secondaryText}>导出调试日志</Text></Pressable></View><View style={styles.settingCard}><Text style={styles.settingTitle}>关于吃哟咯</Text><Text style={styles.settingSub}>每种药品都有自己的确认状态。系统通知被划掉或错过后，App 仍会保留“待确认”，直到你点击“确认已吃药”。</Text></View><View style={styles.settingCard}><Text style={styles.settingTitle}>吃哟咯</Text><Text style={styles.settingSub}>按时吃药提醒 · v0.1.0</Text></View></ScrollView>;
 }
 
 function TabButton({ icon, label, active, onPress }: { icon: string; label: string; active: boolean; onPress: () => void }) { return <Pressable style={styles.tab} onPress={onPress}><Text style={[styles.tabIcon, active && styles.tabActive]}>{icon}</Text><Text style={[styles.tabLabel, active && styles.tabActive]}>{label}</Text></Pressable>; }
@@ -326,7 +326,6 @@ function ItemEditor({ item, onClose, onSave }: { item: YoItem | null; onClose: (
   const set = <K extends keyof YoItem>(key: K, value: YoItem[K]) => setDraft((old) => ({ ...old, [key]: value }));
   const save = () => draft.name.trim() ? onSave(draft) : Alert.alert('还差一步', '请先填写药品名称');
   const days: Array<[string, number]> = [['日', 1], ['一', 2], ['二', 3], ['三', 4], ['四', 5], ['五', 6], ['六', 7]];
-  const sound = draft.sound ?? 'default';
   const selectedTime = draft.fixedTimes[editingTimeIndex] ?? '08:00';
 
   return <Modal visible={Boolean(item)} animationType="slide" presentationStyle="fullScreen" onRequestClose={onClose}>
@@ -343,14 +342,12 @@ function ItemEditor({ item, onClose, onSave }: { item: YoItem | null; onClose: (
         {draft.repeatRule !== 'daily' && <View style={styles.controlBlock}><Text style={styles.helper}>选择提醒日</Text><View style={styles.weekdays}>{days.map(([label, day]) => { const selected = draft.weekdays.includes(day); return <Pressable key={day} onPress={() => { const next = draft.repeatRule === 'weekly' ? [day] : selected ? draft.weekdays.filter((value) => value !== day) : [...draft.weekdays, day]; set('weekdays', next); }} style={[styles.weekday, selected && styles.weekdayOn]}><Text style={[styles.weekdayText, selected && styles.weekdayTextOn]}>{label}</Text></Pressable>; })}</View></View>}
         <Text style={styles.label}>响铃次数</Text><View style={styles.segment}><Segment label="1 次" active={draft.bellCount === 1} onPress={() => set('bellCount', 1)} /><Segment label="2 次" active={draft.bellCount === 2} onPress={() => set('bellCount', 2)} /></View>
         {draft.bellCount === 2 && <View style={styles.controlBlock}><SelectField label="第二次提醒间隔" value={`间隔 ${draft.secondBellDelayMinutes} 分钟`} onPress={() => setPicker('delay')} /></View>}
-        <Text style={styles.label}>提醒铃声</Text><SelectField value={soundLabels[sound]} onPress={() => setPicker('sound')} />
         <View style={styles.switchRow}><View style={styles.switchCopy}><Text style={styles.label}>启用提醒</Text><Text style={styles.helper}>关闭后不会安排新的提醒</Text></View><Switch value={draft.enabled} onValueChange={(value) => { if (value) { set('enabled', true); return; } Alert.alert('关闭提醒？', '关闭后这个药品不会再响铃和振动。', [{ text: '继续开启', style: 'cancel' }, { text: '确认关闭', style: 'destructive', onPress: () => set('enabled', false) }]); }} trackColor={{ true: colors.teal }} thumbColor="#FFF" /></View>
       </ScrollView>
       <View style={styles.modalFooter}><Pressable style={styles.saveButton} onPress={save}><Text style={styles.saveButtonText}>保存提醒</Text></Pressable></View>
       <OptionPicker visible={picker === 'interval'} title="选择提醒间隔" options={intervalOptions} value={String(draft.intervalHours)} onSelect={(value) => set('intervalHours', Number(value))} onClose={() => setPicker(null)} />
       <OptionPicker visible={picker === 'time'} title="选择提醒时间" options={timeOptions.map((value) => ({ value, label: value }))} value={selectedTime} onSelect={(value) => set('fixedTimes', draft.fixedTimes.map((time, index) => index === editingTimeIndex ? value : time))} onClose={() => setPicker(null)} />
       <OptionPicker visible={picker === 'delay'} title="选择第二次提醒间隔" options={delayOptions} value={String(draft.secondBellDelayMinutes)} onSelect={(value) => set('secondBellDelayMinutes', Number(value))} onClose={() => setPicker(null)} />
-      <OptionPicker visible={picker === 'sound'} title="选择提醒铃声" options={soundOptions} value={sound} onSelect={(value) => set('sound', value as ReminderSound)} onClose={() => setPicker(null)} />
     </KeyboardAvoidingView>
     </SafeAreaView>
   </Modal>;

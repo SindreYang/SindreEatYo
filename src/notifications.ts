@@ -18,8 +18,10 @@ type NativeAlarmRecord = {
 type NativeAlarmModule = {
   scheduleAlarms?: (recordsJson: string) => Promise<void>;
   cancelAllAlarms?: () => Promise<void>;
-  getStatus?: () => Promise<{ exactAlarm: boolean; fullScreen: boolean; notifications: boolean }>;
+  getStatus?: () => Promise<{ exactAlarm: boolean; fullScreen: boolean; notifications: boolean; batteryOptimizationIgnored?: boolean; lastAlarmEvent?: string; lastAlarmAt?: string }>;
   testAlarm?: () => Promise<void>;
+  openBatteryOptimizationSettings?: () => Promise<void>;
+  openAppDetailsSettings?: () => Promise<void>;
 };
 
 const nativeAlarm = NativeModules.EatYoAlarm as NativeAlarmModule | undefined;
@@ -33,55 +35,24 @@ Notifications.setNotificationHandler({
   }),
 });
 
-export const soundLabels: Record<ReminderSound, string> = {
-  default: '系统默认',
-  gentle: '轻柔提示',
-  urgent: '强提醒',
-};
+const ALARM_CHANNEL_ID = 'eat-yo-alarm-v3';
 
-export function channelIdFor(sound: ReminderSound = 'default') {
-  // A new channel id is intentional: Android permanently keeps the user's
-  // old channel sound/importance settings, even after the app code changes.
-  return `eat-yo-v2-${sound}`;
-}
-
-function soundFileFor(sound: ReminderSound = 'default'): string {
-  if (sound === 'default') return 'default';
-  return `${sound}.wav`;
+export function channelIdFor(_sound: ReminderSound = 'default') {
+  return ALARM_CHANNEL_ID;
 }
 
 export async function prepareNotifications(): Promise<boolean> {
   try {
     if (Platform.OS === 'android') {
-      await Promise.all([
-      Notifications.setNotificationChannelAsync(channelIdFor('default'), {
-        name: '吃哟咯·系统默认',
+      await Notifications.setNotificationChannelAsync(ALARM_CHANNEL_ID, {
+        name: '吃哟咯·闹钟提醒',
         importance: Notifications.AndroidImportance.MAX,
         bypassDnd: true,
-        vibrationPattern: [0, 250, 150, 250],
+        vibrationPattern: [0, 450, 120, 450],
         sound: 'default',
         audioAttributes: { usage: AndroidAudioUsage.ALARM, contentType: AndroidAudioContentType.SONIFICATION, flags: { enforceAudibility: true, requestHardwareAudioVideoSynchronization: false } },
         lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
-      }),
-      Notifications.setNotificationChannelAsync(channelIdFor('gentle'), {
-        name: '吃哟咯·轻柔提示',
-        importance: Notifications.AndroidImportance.DEFAULT,
-        bypassDnd: false,
-        vibrationPattern: [0, 160],
-        sound: 'gentle.wav',
-        audioAttributes: { usage: AndroidAudioUsage.ALARM, contentType: AndroidAudioContentType.SONIFICATION },
-        lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
-      }),
-      Notifications.setNotificationChannelAsync(channelIdFor('urgent'), {
-        name: '吃哟咯·强提醒',
-        importance: Notifications.AndroidImportance.MAX,
-        bypassDnd: true,
-        vibrationPattern: [0, 400, 120, 400],
-        sound: 'urgent.wav',
-        audioAttributes: { usage: AndroidAudioUsage.ALARM, contentType: AndroidAudioContentType.SONIFICATION, flags: { enforceAudibility: true, requestHardwareAudioVideoSynchronization: false } },
-        lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
-      }),
-      ]);
+      });
     }
     const current = await Notifications.getPermissionsAsync();
     if (!current.granted) {
@@ -98,17 +69,16 @@ export async function prepareNotifications(): Promise<boolean> {
 }
 
 export function notificationContent(item: YoItem) {
-  const sound = item.sound ?? 'default';
   return {
     title: `该吃药啦：${item.name}`,
     body: item.note ? `${item.note}\n请进入吃哟咯确认已吃药` : '请进入吃哟咯确认已吃药',
-    sound: soundFileFor(sound),
-    priority: sound === 'urgent' || sound === 'default' ? 'max' : 'high',
+    sound: 'default',
+    priority: 'max',
     sticky: true,
     autoDismiss: false,
-    vibrate: sound === 'urgent' ? [0, 450, 120, 450] : [0, 250],
+    vibrate: [0, 450, 120, 450],
     data: { itemId: item.id, action: 'dose-due', alarmMode: true },
-    ...(Platform.OS === 'android' ? { channelId: channelIdFor(sound) } : {}),
+    ...(Platform.OS === 'android' ? { channelId: ALARM_CHANNEL_ID } : {}),
   };
 }
 
@@ -144,7 +114,7 @@ function addNativeRecord(records: NativeAlarmRecord[], item: YoItem, dueAt: Date
     at: dueAt.getTime(),
     title: `该吃药啦：${item.name}`,
     body: item.note ? `${item.note}\n请进入吃哟咯确认已吃药` : '请进入吃哟咯确认已吃药',
-    sound: item.sound ?? 'default',
+    sound: 'default',
     itemId: item.id,
     dueAt: dueAt.toISOString(),
   });
@@ -255,6 +225,14 @@ export async function getNativeAlarmStatus() {
   }
 }
 
+export async function openBatteryOptimizationSettings() {
+  if (Platform.OS === 'android' && nativeAlarm?.openBatteryOptimizationSettings) await nativeAlarm.openBatteryOptimizationSettings();
+}
+
+export async function openAppDetailsSettings() {
+  if (Platform.OS === 'android' && nativeAlarm?.openAppDetailsSettings) await nativeAlarm.openAppDetailsSettings();
+}
+
 export async function testAlarm() {
   try {
     if (Platform.OS === 'android' && nativeAlarm?.testAlarm) {
@@ -262,7 +240,7 @@ export async function testAlarm() {
       await addDebugLog('test_alarm_sent', { native: true });
       return true;
     }
-    await Notifications.scheduleNotificationAsync({ content: notificationContent({ ...({} as YoItem), id: 'test', name: '测试提醒', note: '', sound: 'urgent' }), trigger: null });
+    await Notifications.scheduleNotificationAsync({ content: notificationContent({ ...({} as YoItem), id: 'test', name: '测试提醒', note: '', sound: 'default' }), trigger: null });
     await addDebugLog('test_alarm_sent', { native: false });
     return true;
   } catch (error) {

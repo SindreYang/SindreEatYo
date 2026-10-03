@@ -14,7 +14,11 @@ import android.media.AudioAttributes
 import android.media.RingtoneManager
 import android.net.Uri
 import android.os.Build
+import android.os.PowerManager
+import android.os.VibrationEffect
+import android.os.Vibrator
 import android.provider.Settings
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.facebook.react.ReactPackage
 import com.facebook.react.bridge.NativeModule
@@ -43,6 +47,11 @@ class AlarmPermissionModule(private val reactContext: ReactApplicationContext) :
       result.putBoolean("exactAlarm", Build.VERSION.SDK_INT < Build.VERSION_CODES.S || alarmManager.canScheduleExactAlarms())
       result.putBoolean("fullScreen", Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE || notificationManager.canUseFullScreenIntent())
       result.putBoolean("notifications", Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU || reactContext.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED)
+      val powerManager = reactContext.getSystemService(Context.POWER_SERVICE) as PowerManager
+      result.putBoolean("batteryOptimizationIgnored", Build.VERSION.SDK_INT < Build.VERSION_CODES.M || powerManager.isIgnoringBatteryOptimizations(reactContext.packageName))
+      val prefs = preferences(reactContext)
+      result.putString("lastAlarmEvent", prefs.getString(KEY_LAST_EVENT, "") ?: "")
+      result.putString("lastAlarmAt", prefs.getString(KEY_LAST_EVENT_AT, "") ?: "")
       promise.resolve(result)
     } catch (error: Exception) {
       promise.reject("STATUS_FAILED", error)
@@ -59,6 +68,25 @@ class AlarmPermissionModule(private val reactContext: ReactApplicationContext) :
 
   @ReactMethod
   fun openNotificationSettings(promise: Promise) = openSettings(Settings.ACTION_APP_NOTIFICATION_SETTINGS, promise)
+
+  @ReactMethod
+  fun openAppDetailsSettings(promise: Promise) = openSettings(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, promise)
+
+  @ReactMethod
+  fun openBatteryOptimizationSettings(promise: Promise) {
+    try {
+      val intent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+        Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply { data = Uri.parse("package:${reactContext.packageName}") }
+      } else {
+        Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
+      }
+      intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+      reactContext.startActivity(intent)
+      promise.resolve(null)
+    } catch (_: Exception) {
+      openSettings(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, promise)
+    }
+  }
 
   @ReactMethod
   fun scheduleAlarms(recordsJson: String, promise: Promise) {
@@ -88,7 +116,7 @@ class AlarmPermissionModule(private val reactContext: ReactApplicationContext) :
   @ReactMethod
   fun testAlarm(promise: Promise) {
     try {
-      MedicationAlarmReceiver.postNotification(reactContext, "吃哟咯·测试提醒", "如果你听到铃声并感到振动，提醒链路正常。", "urgent", "test", System.currentTimeMillis().toString())
+      MedicationAlarmReceiver.postNotification(reactContext, "吃哟咯·测试提醒", "如果你听到铃声并感到振动，提醒链路正常。", "default", "test", System.currentTimeMillis().toString())
       promise.resolve(null)
     } catch (error: Exception) {
       promise.reject("TEST_FAILED", error)
@@ -109,7 +137,13 @@ class AlarmPermissionModule(private val reactContext: ReactApplicationContext) :
   companion object {
     const val PREFS_NAME = "eat_yo_alarm"
     const val KEY_RECORDS = "records"
+    const val KEY_LAST_EVENT = "last_alarm_event"
+    const val KEY_LAST_EVENT_AT = "last_alarm_at"
     fun preferences(context: Context): SharedPreferences = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    fun recordEvent(context: Context, event: String) {
+      preferences(context).edit().putString(KEY_LAST_EVENT, event).putString(KEY_LAST_EVENT_AT, System.currentTimeMillis().toString()).apply()
+      Log.i("EatYoAlarm", event)
+    }
   }
 }
 
@@ -118,7 +152,9 @@ object AlarmScheduler {
 
   fun scheduleRecords(context: Context, records: JSONArray) {
     cancelAll(context)
+    AlarmPermissionModule.recordEvent(context, "schedule_started")
     val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+    var scheduledCount = 0
     for (index in 0 until records.length()) {
       val record = records.getJSONObject(index)
       val at = record.optLong("at", 0L)
@@ -147,10 +183,13 @@ object AlarmScheduler {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && !alarmManager.canScheduleExactAlarms()) alarmManager.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, operation)
         else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) alarmManager.setAlarmClock(alarmInfo, operation)
         else alarmManager.setExact(AlarmManager.RTC_WAKEUP, at, operation)
+        scheduledCount += 1
       } catch (_: SecurityException) {
         alarmManager.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, operation)
+        scheduledCount += 1
       }
     }
+    AlarmPermissionModule.recordEvent(context, "schedule_count_$scheduledCount")
   }
 
   fun restore(context: Context) {
@@ -179,18 +218,17 @@ object AlarmScheduler {
 
 class MedicationAlarmReceiver : BroadcastReceiver() {
   override fun onReceive(context: Context, intent: Intent) {
+    AlarmPermissionModule.recordEvent(context, "alarm_received")
     postNotification(context, intent.getStringExtra("title") ?: "该吃药啦", intent.getStringExtra("body") ?: "请进入吃哟咯确认已吃药", intent.getStringExtra("sound") ?: "default", intent.getStringExtra("itemId") ?: "", intent.getStringExtra("dueAt") ?: System.currentTimeMillis().toString())
   }
 
   companion object {
-    private const val DEFAULT_CHANNEL = "eat-yo-native-default-v2"
-    private const val GENTLE_CHANNEL = "eat-yo-native-gentle-v2"
-    private const val URGENT_CHANNEL = "eat-yo-native-urgent-v2"
+    private const val ALARM_CHANNEL = "eat-yo-native-alarm-v3"
+    private var activeRingtone: android.media.Ringtone? = null
 
     fun postNotification(context: Context, title: String, body: String, sound: String, itemId: String, dueAt: String) {
       val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
       createChannels(context, manager)
-      val channel = when (sound) { "gentle" -> GENTLE_CHANNEL; "urgent" -> URGENT_CHANNEL; else -> DEFAULT_CHANNEL }
       val requestCode = ("$itemId-$dueAt".hashCode() and 0x7fffffff)
       val openIntent = Intent(context, MainActivity::class.java).apply {
         action = "com.sindreyang.sindreeatyo.MEDICATION_ALARM"
@@ -201,7 +239,7 @@ class MedicationAlarmReceiver : BroadcastReceiver() {
       }
       val flags = PendingIntent.FLAG_UPDATE_CURRENT or if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) PendingIntent.FLAG_IMMUTABLE else 0
       val contentIntent = PendingIntent.getActivity(context, requestCode, openIntent, flags)
-      val builder = NotificationCompat.Builder(context, channel)
+      val builder = NotificationCompat.Builder(context, ALARM_CHANNEL)
         .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
         .setContentTitle(title)
         .setContentText(body)
@@ -213,26 +251,45 @@ class MedicationAlarmReceiver : BroadcastReceiver() {
         .setAutoCancel(false)
         .setContentIntent(contentIntent)
         .setFullScreenIntent(contentIntent, true)
-        .setVibrate(if (sound == "urgent") longArrayOf(0, 450, 120, 450) else longArrayOf(0, 250, 150, 250))
+        .setDefaults(NotificationCompat.DEFAULT_ALL)
+        .setVibrate(longArrayOf(0, 450, 120, 450))
       manager.notify(requestCode, builder.build())
+      AlarmPermissionModule.recordEvent(context, "notification_posted")
+
+      val alarmAttributes = AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_ALARM).setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION).build()
+      val alarmUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM) ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
+      if (alarmUri != null) {
+        activeRingtone?.stop()
+        activeRingtone = RingtoneManager.getRingtone(context, alarmUri)
+        activeRingtone?.audioAttributes = alarmAttributes
+        activeRingtone?.play()
+        AlarmPermissionModule.recordEvent(context, "ringtone_started")
+      }
+
+      val vibrator = context.getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
+      if (vibrator.hasVibrator()) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) vibrator.vibrate(VibrationEffect.createWaveform(longArrayOf(0, 450, 120, 450), -1))
+        else {
+          @Suppress("DEPRECATION")
+          vibrator.vibrate(longArrayOf(0, 450, 120, 450), -1)
+        }
+        AlarmPermissionModule.recordEvent(context, "vibration_started")
+      }
     }
 
     private fun createChannels(context: Context, manager: NotificationManager) {
       if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
       val alarmAttributes = AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_ALARM).setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION).build()
-      val default = NotificationChannel(DEFAULT_CHANNEL, "吃哟咯·默认提醒", NotificationManager.IMPORTANCE_HIGH).apply {
-        description = "吃药时间提醒"; enableVibration(true); vibrationPattern = longArrayOf(0, 250, 150, 250)
-        setSound(RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM), alarmAttributes); lockscreenVisibility = NotificationCompat.VISIBILITY_PUBLIC
+      val alarm = NotificationChannel(ALARM_CHANNEL, "吃哟咯·闹钟提醒", NotificationManager.IMPORTANCE_HIGH).apply {
+        description = "吃药时间提醒，使用手机系统闹钟铃声"
+        enableVibration(true)
+        vibrationPattern = longArrayOf(0, 450, 120, 450)
+        // Sound and vibration are also started directly below. Keeping the channel
+        // silent avoids duplicate audio while still allowing heads-up/full-screen UI.
+        setSound(null, alarmAttributes)
+        lockscreenVisibility = NotificationCompat.VISIBILITY_PUBLIC
       }
-      val gentle = NotificationChannel(GENTLE_CHANNEL, "吃哟咯·轻柔提示", NotificationManager.IMPORTANCE_HIGH).apply {
-        enableVibration(true); vibrationPattern = longArrayOf(0, 160)
-        setSound(Uri.parse("android.resource://${context.packageName}/${context.resources.getIdentifier("gentle", "raw", context.packageName)}"), alarmAttributes); lockscreenVisibility = NotificationCompat.VISIBILITY_PUBLIC
-      }
-      val urgent = NotificationChannel(URGENT_CHANNEL, "吃哟咯·强提醒", NotificationManager.IMPORTANCE_HIGH).apply {
-        enableVibration(true); vibrationPattern = longArrayOf(0, 450, 120, 450)
-        setSound(Uri.parse("android.resource://${context.packageName}/${context.resources.getIdentifier("urgent", "raw", context.packageName)}"), alarmAttributes); lockscreenVisibility = NotificationCompat.VISIBILITY_PUBLIC
-      }
-      manager.createNotificationChannels(listOf(default, gentle, urgent))
+      manager.createNotificationChannel(alarm)
     }
   }
 }

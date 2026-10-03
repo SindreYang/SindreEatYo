@@ -3,6 +3,7 @@ const path = require('path');
 const { withAndroidManifest, withDangerousMod } = require('@expo/config-plugins');
 
 const FULL_SCREEN_PERMISSION = 'android.permission.USE_FULL_SCREEN_INTENT';
+const BATTERY_PERMISSION = 'android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS';
 const BUILDER_RELATIVE_PATH = 'node_modules/expo-notifications/android/src/main/java/expo/modules/notifications/notifications/presentation/builders/ExpoNotificationBuilder.kt';
 const NATIVE_SOURCE_RELATIVE_PATH = 'plugins/native/EatYoAlarm.kt';
 const PACKAGE_PATH = 'com/sindreyang/sindreeatyo';
@@ -12,8 +13,9 @@ function withAlarmNotifications(config) {
     const permissions = manifestConfig.modResults.manifest['uses-permission'] ?? [];
     if (!permissions.some((permission) => permission.$?.['android:name'] === FULL_SCREEN_PERMISSION)) {
       permissions.push({ $: { 'android:name': FULL_SCREEN_PERMISSION } });
-      manifestConfig.modResults.manifest['uses-permission'] = permissions;
     }
+    if (!permissions.some((permission) => permission.$?.['android:name'] === BATTERY_PERMISSION)) permissions.push({ $: { 'android:name': BATTERY_PERMISSION } });
+    manifestConfig.modResults.manifest['uses-permission'] = permissions;
     const application = manifestConfig.modResults.manifest.application?.[0];
     if (application) {
       application.receiver = application.receiver ?? [];
