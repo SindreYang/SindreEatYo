@@ -17,6 +17,7 @@
 - 当前阶段只开发和构建 Android；iOS 暂缓，iOS workflow 只允许手动触发，除非用户明确要求恢复整体构建。
 - Android 可以在 Windows/Linux 上开发，使用 GitHub Actions 的 Ubuntu Runner 构建。
 - Android 需要使用原生能力时，优先通过 Expo Config Plugin、Kotlin 原生模块或 Android 原生 API 实现。
+- 自定义 Android 原生代码必须放在 `plugins/native/` 等不受 `android/` 忽略规则影响的位置，并由 Expo Config Plugin 在 `prebuild` 时复制、注册和写入 Manifest；不能只依赖被 `.gitignore` 忽略的 `android/` 目录。
 - Release APK 必须内置 JS bundle，安装后不依赖 Metro、不依赖开发电脑、不显示 “Unable to load script”。
 - 当前 APK 是测试签名的 Release 构建，适合真机安装调试；后续上架再接入正式签名和密钥。
 
