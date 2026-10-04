@@ -92,13 +92,6 @@ function withAlarmNotifications(config) {
       fs.writeFileSync(mainActivityPath, mainActivity);
     }
 
-    if (!mainActivity.includes('SINDRE_ALARM_VISIBILITY')) {
-      const visibilityBlock = `\n  // SINDRE_ALARM_VISIBILITY: native alarms use full-screen notifications while backgrounded.\n  override fun onResume() {\n    super.onResume()\n    EatYoAppVisibility.mainActivityVisible = true\n  }\n\n  override fun onPause() {\n    EatYoAppVisibility.mainActivityVisible = false\n    super.onPause()\n  }\n`;
-      const javadocMarker = '  /**\n   * Returns the name of the main component';
-      mainActivity = mainActivity.replace(javadocMarker, `${visibilityBlock}\n${javadocMarker}`);
-      fs.writeFileSync(mainActivityPath, mainActivity);
-    }
-
     const builderPath = path.join(dangerousConfig.modRequest.projectRoot, BUILDER_RELATIVE_PATH);
     if (!fs.existsSync(builderPath)) return dangerousConfig;
     let source = fs.readFileSync(builderPath, 'utf8');

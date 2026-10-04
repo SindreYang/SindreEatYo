@@ -33,10 +33,6 @@ import android.widget.TextView
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 
-object EatYoAppVisibility {
-  @Volatile var mainActivityVisible = false
-}
-
 class AlarmForegroundService : Service() {
   private val handler = Handler(Looper.getMainLooper())
   private var ringtone: Ringtone? = null
@@ -77,7 +73,11 @@ class AlarmForegroundService : Service() {
 
   private fun startBackgroundNotification() {
     if (hasActiveAlarm()) return
-    val notification = NotificationCompat.Builder(this, BACKGROUND_CHANNEL)
+    startAsForeground(BACKGROUND_NOTIFICATION_ID, backgroundNotification())
+    AlarmPermissionModule.recordEvent(this, "background_service_started")
+  }
+
+  private fun backgroundNotification(): Notification = NotificationCompat.Builder(this, BACKGROUND_CHANNEL)
       .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
       .setContentTitle("吃哟咯正在后台提醒")
       .setContentText("到吃药时间会响铃并振动")
@@ -85,10 +85,8 @@ class AlarmForegroundService : Service() {
       .setOngoing(true)
       .setPriority(NotificationCompat.PRIORITY_LOW)
       .setContentIntent(openAppPendingIntent())
+      .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
       .build()
-    startAsForeground(BACKGROUND_NOTIFICATION_ID, notification)
-    AlarmPermissionModule.recordEvent(this, "background_service_started")
-  }
 
   private fun startAlarm(intent: Intent) {
     activeTitle = intent.getStringExtra(EXTRA_TITLE) ?: "该吃药啦"
@@ -113,31 +111,14 @@ class AlarmForegroundService : Service() {
     val itemId = activeItemId ?: ""
     val dueAt = activeDueAt ?: System.currentTimeMillis().toString()
     val notification = alarmNotification(title, body, itemId, dueAt)
-    startAsForeground(ALARM_NOTIFICATION_ID, notification)
+    // Keep the foreground-service notification separate. Android treats the
+    // ongoing FGS notification as persistent status, while this independent
+    // high-importance notification is allowed to invoke the full-screen alarm.
+    startAsForeground(BACKGROUND_NOTIFICATION_ID, backgroundNotification())
     (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).notify(ALARM_NOTIFICATION_ID, notification)
     currentNotificationId = ALARM_NOTIFICATION_ID
-    AlarmPermissionModule.recordEvent(this, "notification_posted")
+    AlarmPermissionModule.recordEvent(this, "alarm_notification_posted")
     ringOnce()
-    showAlarmActivity(title, body, itemId, dueAt)
-  }
-
-  private fun showAlarmActivity(title: String, body: String, itemId: String, dueAt: String) {
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && !EatYoAppVisibility.mainActivityVisible) {
-      AlarmPermissionModule.recordEvent(this, "alarm_activity_via_full_screen_notification")
-      return
-    }
-    try {
-      startActivity(Intent(this, MedicationAlarmActivity::class.java).apply {
-        putExtra(EXTRA_TITLE, title)
-        putExtra(EXTRA_BODY, body)
-        putExtra(EXTRA_ITEM_ID, itemId)
-        putExtra(EXTRA_DUE_AT, dueAt)
-        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
-      })
-      AlarmPermissionModule.recordEvent(this, "alarm_activity_requested_foreground")
-    } catch (error: Exception) {
-      AlarmPermissionModule.recordEvent(this, "alarm_activity_failed_${error.javaClass.simpleName}")
-    }
   }
 
   private fun hasActiveAlarm(): Boolean = activeTitle != null
@@ -168,7 +149,7 @@ class AlarmForegroundService : Service() {
       putExtra(EXTRA_BODY, body)
       putExtra(EXTRA_ITEM_ID, itemId)
       putExtra(EXTRA_DUE_AT, dueAt)
-      addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+      addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_NO_USER_ACTION)
     }
     val requestCode = ("$itemId-$dueAt".hashCode() and 0x7fffffff)
     val flags = PendingIntent.FLAG_UPDATE_CURRENT or immutableFlag()
@@ -187,6 +168,7 @@ class AlarmForegroundService : Service() {
       .setFullScreenIntent(fullScreen, true)
       .setContentIntent(fullScreen)
       .setVibrate(longArrayOf(0, 450, 120, 450))
+      .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
       .build()
   }
 
@@ -202,34 +184,38 @@ class AlarmForegroundService : Service() {
     if (uri != null) {
       try {
         audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        var focusResult = AudioManager.AUDIOFOCUS_REQUEST_FAILED
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
           audioFocusRequest = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_EXCLUSIVE)
             .setAudioAttributes(attributes)
             .build()
-          audioManager?.requestAudioFocus(audioFocusRequest!!)
+          focusResult = audioManager?.requestAudioFocus(audioFocusRequest!!) ?: AudioManager.AUDIOFOCUS_REQUEST_FAILED
         } else {
           @Suppress("DEPRECATION")
-          audioManager?.requestAudioFocus(null, AudioManager.STREAM_ALARM, AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_EXCLUSIVE)
+          focusResult = audioManager?.requestAudioFocus(null, AudioManager.STREAM_ALARM, AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_EXCLUSIVE) ?: AudioManager.AUDIOFOCUS_REQUEST_FAILED
         }
-        mediaPlayer = MediaPlayer().apply {
-          setAudioAttributes(attributes)
-          setWakeMode(this@AlarmForegroundService, PowerManager.PARTIAL_WAKE_LOCK)
-          setDataSource(this@AlarmForegroundService, uri)
-          isLooping = true
-          prepare()
-          start()
-        }
-        AlarmPermissionModule.recordEvent(this, "ringtone_started")
+        AlarmPermissionModule.recordEvent(this, "audio_focus_$focusResult")
+        // RingtoneManager uses the phone's current system alarm sound. This is
+        // more reliable than treating the alarm URI as ordinary app media on
+        // Android device variants with separate alarm-volume policies.
+        ringtone = RingtoneManager.getRingtone(this, uri)
+        ringtone?.audioAttributes = attributes
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) ringtone?.isLooping = true
+        ringtone?.play()
+        AlarmPermissionModule.recordEvent(this, "system_alarm_ringtone_started")
       } catch (error: Exception) {
         AlarmPermissionModule.recordEvent(this, "ringtone_failed_${error.javaClass.simpleName}")
-        mediaPlayer?.release()
-        mediaPlayer = null
         try {
-          ringtone = RingtoneManager.getRingtone(this, uri)
-          ringtone?.audioAttributes = attributes
-          if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) ringtone?.isLooping = true
-          ringtone?.play()
-          AlarmPermissionModule.recordEvent(this, "ringtone_fallback")
+          mediaPlayer = MediaPlayer().apply {
+            setAudioAttributes(attributes)
+            setWakeMode(this@AlarmForegroundService, PowerManager.PARTIAL_WAKE_LOCK)
+            setDataSource(this@AlarmForegroundService, uri)
+            setVolume(1.0f, 1.0f)
+            isLooping = true
+            prepare()
+            start()
+          }
+          AlarmPermissionModule.recordEvent(this, "media_player_ringtone_started")
         } catch (fallbackError: Exception) {
           AlarmPermissionModule.recordEvent(this, "ringtone_fallback_failed_${fallbackError.javaClass.simpleName}")
         }
@@ -254,7 +240,11 @@ class AlarmForegroundService : Service() {
 
   private fun stopAlertBurst() {
     try {
-      mediaPlayer?.let { if (it.isPlaying) it.stop(); it.reset(); it.release() }
+      mediaPlayer?.let {
+        if (it.isPlaying) it.stop()
+        it.reset()
+        it.release()
+      }
     } catch (_: Exception) { }
     mediaPlayer = null
     ringtone?.stop()
