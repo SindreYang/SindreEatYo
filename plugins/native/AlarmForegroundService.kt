@@ -11,6 +11,7 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.Color
 import android.graphics.drawable.ColorDrawable
+import android.graphics.drawable.GradientDrawable
 import android.media.AudioAttributes
 import android.media.AudioFocusRequest
 import android.media.AudioManager
@@ -28,6 +29,7 @@ import android.os.PowerManager
 import android.view.Gravity
 import android.view.WindowManager
 import android.widget.Button
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.core.app.NotificationCompat
@@ -154,6 +156,12 @@ class AlarmForegroundService : Service() {
     val requestCode = ("$itemId-$dueAt".hashCode() and 0x7fffffff)
     val flags = PendingIntent.FLAG_UPDATE_CURRENT or immutableFlag()
     val fullScreen = PendingIntent.getActivity(this, requestCode, intent, flags, pendingIntentCreatorOptions())
+    val confirmIntent = Intent(this, MedicationAlarmReceiver::class.java).apply {
+      action = ACTION_CONFIRM_ALARM
+      putExtra(EXTRA_ITEM_ID, itemId)
+      putExtra(EXTRA_DUE_AT, dueAt)
+    }
+    val confirmPendingIntent = PendingIntent.getBroadcast(this, requestCode xor 0x40000000, confirmIntent, flags)
     return NotificationCompat.Builder(this, ALARM_CHANNEL)
       .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
       .setContentTitle(title)
@@ -167,6 +175,7 @@ class AlarmForegroundService : Service() {
       .setOnlyAlertOnce(false)
       .setFullScreenIntent(fullScreen, true)
       .setContentIntent(fullScreen)
+      .addAction(NotificationCompat.Action.Builder(android.R.drawable.ic_menu_close_clear_cancel, "确认已吃药", confirmPendingIntent).build())
       .setVibrate(longArrayOf(0, 450, 120, 450))
       .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
       .build()
@@ -334,6 +343,7 @@ class AlarmForegroundService : Service() {
     const val ACTION_START_BACKGROUND = "com.sindreyang.sindreeatyo.START_BACKGROUND"
     const val ACTION_START_ALARM = "com.sindreyang.sindreeatyo.START_ALARM"
     const val ACTION_STOP_ALARM = "com.sindreyang.sindreeatyo.STOP_ALARM"
+    const val ACTION_CONFIRM_ALARM = "com.sindreyang.sindreeatyo.CONFIRM_ALARM"
     const val EXTRA_TITLE = "title"
     const val EXTRA_BODY = "body"
     const val EXTRA_ITEM_ID = "itemId"
@@ -401,6 +411,10 @@ class AlarmForegroundService : Service() {
 }
 
 class MedicationAlarmActivity : Activity() {
+  private var itemId = ""
+  private var dueAt = ""
+  private var confirmed = false
+
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
     prepareWindow()
@@ -426,51 +440,88 @@ class MedicationAlarmActivity : Activity() {
   private fun showContent() {
     val title = intent.getStringExtra(AlarmForegroundService.EXTRA_TITLE) ?: "该吃药啦"
     val body = intent.getStringExtra(AlarmForegroundService.EXTRA_BODY) ?: "请进入吃哟咯确认已吃药"
-    val itemId = intent.getStringExtra(AlarmForegroundService.EXTRA_ITEM_ID) ?: ""
-    val dueAt = intent.getStringExtra(AlarmForegroundService.EXTRA_DUE_AT) ?: ""
+    itemId = intent.getStringExtra(AlarmForegroundService.EXTRA_ITEM_ID) ?: ""
+    dueAt = intent.getStringExtra(AlarmForegroundService.EXTRA_DUE_AT) ?: ""
     val root = LinearLayout(this).apply {
       orientation = LinearLayout.VERTICAL
       gravity = Gravity.CENTER
-      setPadding(48, 56, 48, 56)
+      setPadding(dp(24), dp(32), dp(24), dp(28))
+      setBackgroundColor(Color.rgb(255, 248, 243))
     }
+    val icon = ImageView(this).apply {
+      setImageDrawable(applicationInfo.loadIcon(packageManager))
+      contentDescription = "吃哟咯"
+    }
+    root.addView(icon, LinearLayout.LayoutParams(dp(76), dp(76)).apply { bottomMargin = dp(18) })
     val heading = TextView(this).apply {
-      text = "吃哟咯"
-      textSize = 22f
-      setTextColor(Color.rgb(45, 45, 45))
+      text = "该吃药啦"
+      textSize = 17f
+      setTextColor(Color.rgb(143, 123, 117))
       gravity = Gravity.CENTER
-    }
-    val titleView = TextView(this).apply {
-      text = title
-      textSize = 30f
-      setTextColor(Color.rgb(35, 35, 35))
-      gravity = Gravity.CENTER
-      setPadding(0, 28, 0, 16)
-    }
-    val bodyView = TextView(this).apply {
-      text = body
-      textSize = 18f
-      setTextColor(Color.rgb(110, 100, 100))
-      gravity = Gravity.CENTER
-      setPadding(0, 0, 0, 36)
-    }
-    val open = Button(this).apply {
-      text = "打开吃哟咯"
-      minHeight = 54
-      setOnClickListener {
-        startActivity(Intent(this@MedicationAlarmActivity, MainActivity::class.java).apply {
-          action = "com.sindreyang.sindreeatyo.MEDICATION_ALARM"
-          putExtra("alarmMode", true)
-          putExtra("itemId", itemId)
-          putExtra("dueAt", dueAt)
-          addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
-        })
-        finish()
-      }
     }
     root.addView(heading, LinearLayout.LayoutParams(-1, -2))
+    val titleView = TextView(this).apply {
+      text = title.removePrefix("该吃药啦：").ifBlank { "请按时服药" }
+      textSize = 30f
+      setTextColor(Color.rgb(51, 43, 43))
+      setTypeface(typeface, android.graphics.Typeface.BOLD)
+      gravity = Gravity.CENTER
+      setPadding(0, dp(8), 0, dp(12))
+    }
     root.addView(titleView, LinearLayout.LayoutParams(-1, -2))
-    root.addView(bodyView, LinearLayout.LayoutParams(-1, -2))
-    root.addView(open, LinearLayout.LayoutParams(-1, -2).apply { topMargin = 12 })
+    val bodyView = TextView(this).apply {
+      text = body
+      textSize = 16f
+      setTextColor(Color.rgb(112, 99, 95))
+      gravity = Gravity.CENTER
+      setPadding(0, 0, 0, dp(22))
+    }
+    val card = LinearLayout(this).apply {
+      orientation = LinearLayout.VERTICAL
+      gravity = Gravity.CENTER
+      setPadding(dp(20), dp(18), dp(20), dp(18))
+      background = rounded(Color.WHITE, dp(20))
+    }
+    card.addView(bodyView, LinearLayout.LayoutParams(-1, -2))
+    root.addView(card, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(18) })
+    val confirm = Button(this).apply {
+      text = "确认已吃药"
+      textSize = 17f
+      setTextColor(Color.WHITE)
+      isAllCaps = false
+      minHeight = dp(56)
+      background = rounded(Color.rgb(22, 168, 154), dp(18))
+      setOnClickListener {
+        confirmDose(this)
+      }
+    }
+    root.addView(confirm, LinearLayout.LayoutParams(-1, dp(60)))
+    val hint = TextView(this).apply {
+      text = "确认后会停止响铃和振动"
+      textSize = 13f
+      setTextColor(Color.rgb(143, 123, 117))
+      gravity = Gravity.CENTER
+      setPadding(0, dp(12), 0, 0)
+    }
+    root.addView(hint, LinearLayout.LayoutParams(-1, -2))
     setContentView(root)
+  }
+
+  private fun confirmDose(button: Button) {
+    if (confirmed) return
+    confirmed = true
+    button.text = "已确认"
+    button.isEnabled = false
+    AlarmPermissionModule.enqueueConfirmedDose(this, itemId, dueAt)
+    AlarmForegroundService.stopActive(this, itemId, dueAt)
+    AlarmPermissionModule.recordEvent(this, "dose_confirmed_from_alarm_screen")
+    window.decorView.postDelayed({ finishAndRemoveTask() }, 220L)
+  }
+
+  private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
+
+  private fun rounded(color: Int, radius: Int): GradientDrawable = GradientDrawable().apply {
+    setColor(color)
+    cornerRadius = radius.toFloat()
   }
 }

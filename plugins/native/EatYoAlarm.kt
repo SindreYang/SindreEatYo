@@ -143,6 +143,18 @@ class AlarmPermissionModule(private val reactContext: ReactApplicationContext) :
   }
 
   @ReactMethod
+  fun consumeConfirmedDoses(promise: Promise) {
+    try {
+      val prefs = preferences(reactContext)
+      val raw = prefs.getString(KEY_CONFIRMED_DOSES, "[]") ?: "[]"
+      prefs.edit().remove(KEY_CONFIRMED_DOSES).apply()
+      promise.resolve(raw)
+    } catch (error: Exception) {
+      promise.reject("CONFIRMED_DOSES_FAILED", error)
+    }
+  }
+
+  @ReactMethod
   fun startBackgroundService(promise: Promise) {
     try {
       preferences(reactContext).edit().putBoolean(KEY_BACKGROUND_SERVICE, true).apply()
@@ -181,7 +193,21 @@ class AlarmPermissionModule(private val reactContext: ReactApplicationContext) :
     const val KEY_LAST_EVENT_AT = "last_alarm_at"
     const val KEY_BACKGROUND_SERVICE = "background_service_enabled"
     const val KEY_EVENT_HISTORY = "alarm_event_history"
+    const val KEY_CONFIRMED_DOSES = "confirmed_doses"
     fun preferences(context: Context): SharedPreferences = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+
+    fun enqueueConfirmedDose(context: Context, itemId: String, dueAt: String) {
+      if (itemId.isBlank() || dueAt.isBlank()) return
+      val prefs = preferences(context)
+      val queue = try { JSONArray(prefs.getString(KEY_CONFIRMED_DOSES, "[]") ?: "[]") } catch (_: Exception) { JSONArray() }
+      for (index in 0 until queue.length()) {
+        val entry = queue.optJSONObject(index) ?: continue
+        if (entry.optString("itemId") == itemId && entry.optString("dueAt") == dueAt) return
+      }
+      queue.put(JSONObject().put("itemId", itemId).put("dueAt", dueAt).put("confirmedAt", System.currentTimeMillis().toString()))
+      prefs.edit().putString(KEY_CONFIRMED_DOSES, queue.toString()).apply()
+      recordEvent(context, "dose_confirmed_native")
+    }
     fun recordEvent(context: Context, event: String) {
       val prefs = preferences(context)
       val now = System.currentTimeMillis()
@@ -368,6 +394,14 @@ object AlarmScheduler {
 
 class MedicationAlarmReceiver : BroadcastReceiver() {
   override fun onReceive(context: Context, intent: Intent) {
+    if (intent.action == AlarmForegroundService.ACTION_CONFIRM_ALARM) {
+      val itemId = intent.getStringExtra(AlarmForegroundService.EXTRA_ITEM_ID) ?: ""
+      val dueAt = intent.getStringExtra(AlarmForegroundService.EXTRA_DUE_AT) ?: ""
+      AlarmPermissionModule.enqueueConfirmedDose(context, itemId, dueAt)
+      AlarmForegroundService.stopActive(context, itemId, dueAt)
+      AlarmPermissionModule.recordEvent(context, "dose_confirmed_from_notification")
+      return
+    }
     AlarmPermissionModule.recordEvent(context, "alarm_received")
     intent.getStringExtra("recordJson")?.let { AlarmScheduler.scheduleFollowing(context, it) }
     AlarmForegroundService.startAlarm(

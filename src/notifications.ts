@@ -27,6 +27,7 @@ type NativeAlarmModule = {
   getStatus?: () => Promise<{ exactAlarm: boolean; fullScreen: boolean; notifications: boolean; batteryOptimizationIgnored?: boolean; lastAlarmEvent?: string; lastAlarmAt?: string; recentAlarmEvents?: string; backgroundServiceEnabled?: boolean; backgroundServiceRunning?: boolean }>;
   testAlarm?: () => Promise<void>;
   stopAlarm?: (itemId?: string, dueAt?: string) => Promise<void>;
+  consumeConfirmedDoses?: () => Promise<string>;
   startBackgroundService?: () => Promise<void>;
   stopBackgroundService?: () => Promise<void>;
   openBatteryOptimizationSettings?: () => Promise<void>;
@@ -253,6 +254,18 @@ export async function testAlarm() {
 
 export async function stopAlarm(itemId?: string, dueAt?: string) {
   if (Platform.OS === 'android' && nativeAlarm?.stopAlarm) await nativeAlarm.stopAlarm(itemId, dueAt);
+}
+
+export async function consumeConfirmedDoses(): Promise<Array<{ itemId: string; dueAt: string; confirmedAt?: string }>> {
+  if (Platform.OS !== 'android' || !nativeAlarm?.consumeConfirmedDoses) return [];
+  try {
+    const raw = await nativeAlarm.consumeConfirmedDoses();
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter((entry) => typeof entry?.itemId === 'string' && typeof entry?.dueAt === 'string') : [];
+  } catch (error) {
+    await addDebugLog('native_confirmed_doses_failed', { error: error instanceof Error ? error.message : String(error) }, 'error');
+    return [];
+  }
 }
 
 export async function setBackgroundServiceEnabled(enabled: boolean) {
