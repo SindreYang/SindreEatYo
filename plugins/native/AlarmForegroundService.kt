@@ -71,6 +71,14 @@ class AlarmForegroundService : Service() {
     super.onDestroy()
   }
 
+  override fun onTaskRemoved(rootIntent: Intent?) {
+    // Removing the React Native task must not cancel the independent
+    // AlarmManager schedule. The service is only a trigger-time audio/UI
+    // worker, so the user may close the app window safely.
+    AlarmPermissionModule.recordEvent(this, "app_task_removed_alarm_schedule_kept")
+    super.onTaskRemoved(rootIntent)
+  }
+
   override fun onBind(intent: Intent?): IBinder? = null
 
   private fun startBackgroundNotification() {
@@ -204,29 +212,35 @@ class AlarmForegroundService : Service() {
           focusResult = audioManager?.requestAudioFocus(null, AudioManager.STREAM_ALARM, AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_EXCLUSIVE) ?: AudioManager.AUDIOFOCUS_REQUEST_FAILED
         }
         AlarmPermissionModule.recordEvent(this, "audio_focus_$focusResult")
-        // RingtoneManager uses the phone's current system alarm sound. This is
-        // more reliable than treating the alarm URI as ordinary app media on
-        // Android device variants with separate alarm-volume policies.
-        ringtone = RingtoneManager.getRingtone(this, uri)
-        ringtone?.audioAttributes = attributes
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) ringtone?.isLooping = true
-        ringtone?.play()
-        AlarmPermissionModule.recordEvent(this, "system_alarm_ringtone_started")
+        val alarmVolume = audioManager?.getStreamVolume(AudioManager.STREAM_ALARM) ?: 0
+        val maxAlarmVolume = audioManager?.getStreamMaxVolume(AudioManager.STREAM_ALARM) ?: 0
+        val ringerMode = audioManager?.ringerMode ?: AudioManager.RINGER_MODE_NORMAL
+        AlarmPermissionModule.recordEvent(this, "alarm_volume_" + alarmVolume + "_of_" + maxAlarmVolume)
+        AlarmPermissionModule.recordEvent(this, "alarm_ringer_mode_" + ringerMode)
+        // MediaPlayer is the primary path because some Android 15/OEM builds
+        // accept Ringtone.play() from a background service but emit no audio.
+        mediaPlayer = MediaPlayer().apply {
+          setAudioAttributes(attributes)
+          setWakeMode(this@AlarmForegroundService, PowerManager.PARTIAL_WAKE_LOCK)
+          setDataSource(this@AlarmForegroundService, uri)
+          setVolume(1.0f, 1.0f)
+          isLooping = true
+          prepare()
+          start()
+        }
+        AlarmPermissionModule.recordEvent(this, "system_alarm_media_player_started")
       } catch (error: Exception) {
-        AlarmPermissionModule.recordEvent(this, "ringtone_failed_${error.javaClass.simpleName}")
+        AlarmPermissionModule.recordEvent(this, "media_player_failed_" + error.javaClass.simpleName)
         try {
-          mediaPlayer = MediaPlayer().apply {
-            setAudioAttributes(attributes)
-            setWakeMode(this@AlarmForegroundService, PowerManager.PARTIAL_WAKE_LOCK)
-            setDataSource(this@AlarmForegroundService, uri)
-            setVolume(1.0f, 1.0f)
-            isLooping = true
-            prepare()
-            start()
-          }
-          AlarmPermissionModule.recordEvent(this, "media_player_ringtone_started")
+          // RingtoneManager remains a fallback for devices whose alarm URI
+          // cannot be prepared by MediaPlayer.
+          ringtone = RingtoneManager.getRingtone(this, uri)
+          ringtone?.audioAttributes = attributes
+          if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) ringtone?.isLooping = true
+          ringtone?.play()
+          AlarmPermissionModule.recordEvent(this, "system_alarm_ringtone_started")
         } catch (fallbackError: Exception) {
-          AlarmPermissionModule.recordEvent(this, "ringtone_fallback_failed_${fallbackError.javaClass.simpleName}")
+          AlarmPermissionModule.recordEvent(this, "ringtone_fallback_failed_" + fallbackError.javaClass.simpleName)
         }
       }
     } else {
